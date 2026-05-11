@@ -35,6 +35,7 @@ function fetchTitleFromTMDB(tmdbId, mediaType) {
 }
 
 function extractVideoUrlFromHtml(html, baseUrl) {
+  // Patterns to find .m3u8 URL
   const patterns = [
     /file:\s*["']([^"']+\.m3u8)["']/,
     /["'](https?:\/\/[^"']+\.m3u8)["']/,
@@ -46,10 +47,13 @@ function extractVideoUrlFromHtml(html, baseUrl) {
     if (match && match[1]) return match[1];
   }
 
+  // If not found, look for an iframe and fetch it
   const iframeMatch = html.match(/<iframe[^>]+src=["']([^"']+)["']/);
   if (iframeMatch && iframeMatch[1]) {
     let iframeUrl = iframeMatch[1];
-    if (!iframeUrl.startsWith('http')) iframeUrl = new URL(iframeUrl, baseUrl).href;
+    if (!iframeUrl.startsWith('http')) {
+      iframeUrl = new URL(iframeUrl, baseUrl).href;
+    }
     return fetch(iframeUrl, { headers: HEADERS })
       .then(res => res.text())
       .then(iframeHtml => {
@@ -79,20 +83,27 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         } else {
           pageUrl = `https://animotvslash.org/${baseSlug}/`;
         }
+
         fetch(pageUrl, { headers: HEADERS })
-          .then(res => res.ok ? res.text() : Promise.reject(`HTTP ${res.status}`))
+          .then(res => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.text();
+          })
           .then(html => extractVideoUrlFromHtml(html, pageUrl))
           .then(videoUrl => {
             if (!videoUrl) {
               resolve([]);
               return;
             }
-            let quality = 'Auto';
+
+            // Detect quality from URL
+            let quality = 'HD';
             if (videoUrl.includes('1080')) quality = '1080p';
             else if (videoUrl.includes('720')) quality = '720p';
             else if (videoUrl.includes('480')) quality = '480p';
             else if (videoUrl.match(/\d{3,4}p/)) quality = videoUrl.match(/\d{3,4}p/)[0];
-            resolve([{
+
+            const stream = {
               name: `ANIMOTVSLASH - ${quality}`,
               title: mediaType === 'tv' ? `S${seasonNum}E${episodeNum}` : 'Movie',
               url: videoUrl,
@@ -101,7 +112,8 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
               headers: HEADERS,
               subtitles: [],
               provider: 'animotvslash'
-            }]);
+            };
+            resolve([stream]);
           })
           .catch(() => resolve([]));
       })
