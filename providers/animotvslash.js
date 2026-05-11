@@ -154,7 +154,7 @@ function fetchTitleFromTMDB(tmdbId, mediaType) {
 }
 
 // ----------------------------------------------------------------------
-// Main exported function
+// Main exported function – returns streams with "HD" quality
 // ----------------------------------------------------------------------
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return new Promise((resolve) => {
@@ -183,7 +183,6 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
             let streams = [];
             const seen = new Set();
 
-            // Helper to add stream from player URL
             function addStreamFromPlayerUrl(pUrl, serverHint) {
               const videoUrl = decodeJwPlayerUrl(pUrl);
               if (videoUrl && !seen.has(videoUrl)) {
@@ -194,11 +193,8 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                   else if (pUrl.toLowerCase().includes('soft')) serverName = 'SOFTSUB';
                   else serverName = `Server${streams.length + 1}`;
                 }
-                let quality = 'Auto';
-                if (videoUrl.includes('1080')) quality = '1080p';
-                else if (videoUrl.includes('720')) quality = '720p';
-                else if (videoUrl.includes('480')) quality = '480p';
-                else if (videoUrl.match(/\d{3,4}p/)) quality = videoUrl.match(/\d{3,4}p/)[0];
+                // FORCE QUALITY TO "HD"
+                const quality = 'HD';
                 streams.push({
                   name: `ANIMOTVSLASH - ${serverName} (${quality})`,
                   title: mediaType === 'tv' ? `S${seasonNum}E${episodeNum}` : 'Movie',
@@ -212,12 +208,10 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
               }
             }
 
-            // Add streams from existing player URLs
             for (let pUrl of playerUrls) {
               addStreamFromPlayerUrl(pUrl, null);
             }
 
-            // If only one stream found, try to fetch additional via AJAX
             if (streams.length < 2 && postId) {
               return fetchAdditionalPlayerUrl(postId).then(extraPlayerUrl => {
                 if (extraPlayerUrl) {
