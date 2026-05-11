@@ -22,17 +22,13 @@ const VIDEO_HEADERS = {
 };
 
 // ----------------------------------------------------------------------
-// Helper: decode a JW Player URL (base64‑encoded JSON)
-// Example: /jw-player/eyJ1cmwiOiJodHRwczovL3J1bWJsZS5jb20vaGxzLXZvZC83N2FtZjQvcGxheWxpc3QubTN1OCIs...
-// Decodes to: {"url":"https://rumble.com/hls-vod/77amf4/playlist.m3u8", ...}
+// Decode JW Player base64 token
 // ----------------------------------------------------------------------
 function decodeJwPlayerUrl(playerUrl) {
   const match = playerUrl.match(/\/jw-player\/([^/?&#]+)/);
   if (!match) return null;
   let b64 = match[1];
-  // Add padding if needed
   while (b64.length % 4) b64 += '=';
-  // Convert URL‑safe base64 to standard base64
   b64 = b64.replace(/-/g, '+').replace(/_/g, '/');
   try {
     const decoded = atob(b64);
@@ -45,45 +41,95 @@ function decodeJwPlayerUrl(playerUrl) {
 }
 
 // ----------------------------------------------------------------------
-// Extract all player URLs from HTML using multiple regex patterns
-// (copied from working Python script)
+// Extract all player URLs from HTML (iframes, data-*, base64 tokens)
 // ----------------------------------------------------------------------
 function getAllPlayerUrls(html, baseUrl) {
   const urls = new Set();
-  // Pattern 1: iframe src
+  // iframe src
   const iframeRe = /<iframe[^>]+src=["']([^"']*?\/jw-player\/[^"']+)["']/gi;
   let match;
   while ((match = iframeRe.exec(html)) !== null) {
     if (match[1]) urls.add(match[1]);
   }
-  // Pattern 2: data-src or data-url attributes
+  // data-src / data-url
   const dataRe = /data-(?:src|url)=["']([^"']*?\/jw-player\/[^"']+)["']/gi;
   while ((match = dataRe.exec(html)) !== null) {
     if (match[1]) urls.add(match[1]);
   }
-  // Pattern 3: base64 tokens inside scripts (starting with "eyJ")
+  // base64 tokens (starting with eyJ)
   const tokenRe = /(eyJ[a-zA-Z0-9+/=]+)['"]/g;
   while ((match = tokenRe.exec(html)) !== null) {
     const token = match[1];
     if (token.length > 20 && token.startsWith('eyJ')) {
-      const fullUrl = `https://animotvslash.org/jw-player/${token}/`;
-      urls.add(fullUrl);
+      urls.add(`https://animotvslash.org/jw-player/${token}/`);
     }
   }
-  // Make URLs absolute
+  // make absolute
   const absolute = new Set();
   for (let url of urls) {
-    if (url.startsWith('http')) {
-      absolute.add(url);
-    } else {
-      absolute.add(baseUrl.replace(/\/$/, '') + '/' + url.replace(/^\//, ''));
-    }
+    if (url.startsWith('http')) absolute.add(url);
+    else absolute.add(baseUrl.replace(/\/$/, '') + '/' + url.replace(/^\//, ''));
   }
   return Array.from(absolute);
 }
 
 // ----------------------------------------------------------------------
-// Slugify title (same as before)
+// Extract post ID from HTML (shortlink or JSON)
+// ----------------------------------------------------------------------
+function getPostId(html) {
+  let match = html.match(/<link rel="shortlink" href="[^"]*\?p=(\d+)"/);
+  if (match) return match[1];
+  match = html.match(/"post_id":"(\d+)"/);
+  if (match) return match[1];
+  match = html.match(/\/wp-json\/wp\/v2\/posts\/(\d+)/);
+  if (match) return match[1];
+  return null;
+}
+
+// ----------------------------------------------------------------------
+// Try to fetch additional player URL via AJAX (for SOFTSUB, etc.)
+// ----------------------------------------------------------------------
+function fetchAdditionalPlayerUrl(postId) {
+  return new Promise((resolve) => {
+    const ajaxUrl = 'https://animotvslash.org/wp-admin/admin-ajax.php';
+    const actions = ['get_embed', 'get_video', 'get_player', 'load_player', 'get_video_sources', 'embed'];
+    let index = 0;
+    function tryNext() {
+      if (index >= actions.length) {
+        resolve(null);
+        return;
+      }
+      const action = actions[index];
+      const params = new URLSearchParams();
+      params.append('action', action);
+      params.append('post_id', postId);
+      fetch(ajaxUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params.toString()
+      })
+        .then(res => res.json())
+        .then(data => {
+          const str = JSON.stringify(data);
+          const playerMatch = str.match(/\/jw-player\/([^"']+)/);
+          if (playerMatch) {
+            resolve(`https://animotvslash.org/jw-player/${playerMatch[1]}`);
+          } else {
+            index++;
+            tryNext();
+          }
+        })
+        .catch(() => {
+          index++;
+          tryNext();
+        });
+    }
+    tryNext();
+  });
+}
+
+// ----------------------------------------------------------------------
+// Slugify title
 // ----------------------------------------------------------------------
 function slugify(title) {
   return title
@@ -95,7 +141,7 @@ function slugify(title) {
 }
 
 // ----------------------------------------------------------------------
-// Fetch title from TMDB (same as before)
+// Fetch title from TMDB
 // ----------------------------------------------------------------------
 function fetchTitleFromTMDB(tmdbId, mediaType) {
   const url = mediaType === 'tv'
@@ -112,11 +158,9 @@ function fetchTitleFromTMDB(tmdbId, mediaType) {
 // ----------------------------------------------------------------------
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return new Promise((resolve) => {
-    console.log(`[animotvslash] called for ${mediaType} ${tmdbId} S${seasonNum}E${episodeNum}`);
     fetchTitleFromTMDB(tmdbId, mediaType)
       .then(title => {
         if (!title) {
-          console.log('[animotvslash] TMDB title not found');
           resolve([]);
           return;
         }
@@ -128,32 +172,34 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         } else {
           pageUrl = `https://animotvslash.org/${baseSlug}/`;
         }
-        console.log(`[animotvslash] fetching ${pageUrl}`);
-        fetch(pageUrl, { headers: HEADERS })
+        return fetch(pageUrl, { headers: HEADERS })
           .then(res => {
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             return res.text();
           })
           .then(html => {
             const playerUrls = getAllPlayerUrls(html, pageUrl);
-            console.log(`[animotvslash] found ${playerUrls.length} player URLs`);
-            const streams = [];
+            const postId = getPostId(html);
+            let streams = [];
             const seen = new Set();
-            for (let i = 0; i < playerUrls.length; i++) {
-              const playerUrl = playerUrls[i];
-              const videoUrl = decodeJwPlayerUrl(playerUrl);
+
+            // Helper to add stream from player URL
+            function addStreamFromPlayerUrl(pUrl, serverHint) {
+              const videoUrl = decodeJwPlayerUrl(pUrl);
               if (videoUrl && !seen.has(videoUrl)) {
                 seen.add(videoUrl);
-                let serverName = '';
-                if (playerUrl.toLowerCase().includes('hard')) serverName = 'HARDSUB';
-                else if (playerUrl.toLowerCase().includes('soft')) serverName = 'SOFTSUB';
-                else serverName = `Server${streams.length + 1}`;
+                let serverName = serverHint;
+                if (!serverName) {
+                  if (pUrl.toLowerCase().includes('hard')) serverName = 'HARDSUB';
+                  else if (pUrl.toLowerCase().includes('soft')) serverName = 'SOFTSUB';
+                  else serverName = `Server${streams.length + 1}`;
+                }
                 let quality = 'Auto';
                 if (videoUrl.includes('1080')) quality = '1080p';
                 else if (videoUrl.includes('720')) quality = '720p';
                 else if (videoUrl.includes('480')) quality = '480p';
                 else if (videoUrl.match(/\d{3,4}p/)) quality = videoUrl.match(/\d{3,4}p/)[0];
-                const stream = {
+                streams.push({
                   name: `ANIMOTVSLASH - ${serverName} (${quality})`,
                   title: mediaType === 'tv' ? `S${seasonNum}E${episodeNum}` : 'Movie',
                   url: videoUrl,
@@ -162,24 +208,33 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                   headers: VIDEO_HEADERS,
                   subtitles: [],
                   provider: 'animotvslash'
-                };
-                streams.push(stream);
+                });
               }
             }
-            if (streams.length === 0) {
-              console.log('[animotvslash] no video stream found');
+
+            // Add streams from existing player URLs
+            for (let pUrl of playerUrls) {
+              addStreamFromPlayerUrl(pUrl, null);
             }
-            resolve(streams);
+
+            // If only one stream found, try to fetch additional via AJAX
+            if (streams.length < 2 && postId) {
+              return fetchAdditionalPlayerUrl(postId).then(extraPlayerUrl => {
+                if (extraPlayerUrl) {
+                  addStreamFromPlayerUrl(extraPlayerUrl, 'SOFTSUB');
+                }
+                return streams;
+              });
+            }
+            return streams;
           })
+          .then(streams => resolve(streams))
           .catch(err => {
-            console.error('[animotvslash] fetch error:', err.message);
+            console.error('[animotvslash] error:', err.message);
             resolve([]);
           });
       })
-      .catch(err => {
-        console.error('[animotvslash] TMDB error:', err.message);
-        resolve([]);
-      });
+      .catch(() => resolve([]));
   });
 }
 
