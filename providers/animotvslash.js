@@ -8,6 +8,17 @@ try {
 
 const TMDB_API_KEY = '6dc830f9624b43261325bed3bf7d0dfa';
 
+// ----------------------------------------------------------------------
+// SLUG OVERRIDES – for anime where the TMDB title does not match the site's URL.
+// Format: "tmdbId": "correct-slug"
+// Example: "114858": "farming-life-in-another-world-2"
+// Add entries as needed.
+// ----------------------------------------------------------------------
+const SLUG_OVERRIDES = {
+  // "12345": "welcome-to-demon-school-iruma-kun",
+  // Add more here...
+};
+
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
   'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -45,18 +56,15 @@ function decodeJwPlayerUrl(playerUrl) {
 // ----------------------------------------------------------------------
 function getAllPlayerUrls(html, baseUrl) {
   const urls = new Set();
-  // iframe src
   const iframeRe = /<iframe[^>]+src=["']([^"']*?\/jw-player\/[^"']+)["']/gi;
   let match;
   while ((match = iframeRe.exec(html)) !== null) {
     if (match[1]) urls.add(match[1]);
   }
-  // data-src / data-url
   const dataRe = /data-(?:src|url)=["']([^"']*?\/jw-player\/[^"']+)["']/gi;
   while ((match = dataRe.exec(html)) !== null) {
     if (match[1]) urls.add(match[1]);
   }
-  // base64 tokens (starting with eyJ)
   const tokenRe = /(eyJ[a-zA-Z0-9+/=]+)['"]/g;
   while ((match = tokenRe.exec(html)) !== null) {
     const token = match[1];
@@ -64,7 +72,6 @@ function getAllPlayerUrls(html, baseUrl) {
       urls.add(`https://animotvslash.org/jw-player/${token}/`);
     }
   }
-  // make absolute
   const absolute = new Set();
   for (let url of urls) {
     if (url.startsWith('http')) absolute.add(url);
@@ -74,7 +81,7 @@ function getAllPlayerUrls(html, baseUrl) {
 }
 
 // ----------------------------------------------------------------------
-// Extract post ID from HTML (shortlink or JSON)
+// Extract post ID from HTML
 // ----------------------------------------------------------------------
 function getPostId(html) {
   let match = html.match(/<link rel="shortlink" href="[^"]*\?p=(\d+)"/);
@@ -165,6 +172,11 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
           return;
         }
         let baseSlug = slugify(title);
+        // Apply manual override if present
+        if (SLUG_OVERRIDES[tmdbId]) {
+          baseSlug = SLUG_OVERRIDES[tmdbId];
+          console.log(`[animotvslash] using override slug: ${baseSlug}`);
+        }
         let pageUrl;
         if (mediaType === 'tv') {
           if (seasonNum > 1) baseSlug = `${baseSlug}-${seasonNum}`;
@@ -172,7 +184,8 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         } else {
           pageUrl = `https://animotvslash.org/${baseSlug}/`;
         }
-        return fetch(pageUrl, { headers: HEADERS })
+        console.log(`[animotvslash] constructed URL: ${pageUrl}`);
+        fetch(pageUrl, { headers: HEADERS })
           .then(res => {
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             return res.text();
@@ -180,7 +193,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
           .then(html => {
             const playerUrls = getAllPlayerUrls(html, pageUrl);
             const postId = getPostId(html);
-            let streams = [];
+            const streams = [];
             const seen = new Set();
 
             function addStreamFromPlayerUrl(pUrl, serverHint) {
@@ -193,7 +206,6 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                   else if (pUrl.toLowerCase().includes('soft')) serverName = 'SOFTSUB';
                   else serverName = `Server${streams.length + 1}`;
                 }
-                // FORCE QUALITY TO "HD"
                 const quality = 'HD';
                 streams.push({
                   name: `ANIMOTVSLASH - ${serverName} (${quality})`,
