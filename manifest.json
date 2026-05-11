@@ -23,6 +23,19 @@
       ]
     },
     {
+  "id": "animotvslash",
+  "name": "ANIMOTVSLASH",
+  "description": "Anime streams from animotvslash.org",
+  "version": "1.0.0",
+  "author": "xrexzerox",
+  "supportedTypes": ["movie", "tv"],
+  "filename": "providers/animotvslash.js",
+  "enabled": true,
+  "formats": ["m3u8", "mp4"],
+  "logo": "https://raw.githubusercontent.com/xrexzerox/nvv/main/assets/animotvslash.png",
+  "contentLanguage": ["en", "ja"]
+},
+    {
       "id": "animekai",
       "name": "AnimeKai",
       "description": "AnimeKai TV episodes via AnimeKai servers",
