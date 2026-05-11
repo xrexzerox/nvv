@@ -1,6 +1,6 @@
 /**
  * animepahe - Built from src/animepahe/
- * Generated: 2026-04-25T11:40:26.173Z
+ * Modified: removed proxy, 360p & dub; only 1080p/720p Sub
  */
 var __create = Object.create;
 var __defProp = Object.defineProperty;
@@ -46,10 +46,6 @@ var __copyProps = (to, from, except, desc) => {
   return to;
 };
 var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
-  // If the importer is in node compatibility mode or this is not an ESM
-  // file that has been converted to a CommonJS file using a Babel-
-  // compatible transform (i.e. "__esModule" has not been set), then set
-  // "default" to the CommonJS "module.exports" for node compatibility.
   isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
   mod
 ));
@@ -79,7 +75,7 @@ var import_cheerio_without_node_native = __toESM(require("cheerio-without-node-n
 
 // src/animepahe/constants.js
 var MAIN_URL = "https://animepahe.pw";
-var PROXY_URL = "https://animepaheproxy.phisheranimepahe.workers.dev/?url=";
+// PROXY_URL removed
 var HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
   "Cookie": "__ddg2_=1234567890",
@@ -89,9 +85,10 @@ var HEADERS = {
 // src/animepahe/utils.js
 function fetchText(_0) {
   return __async(this, arguments, function* (url, options = {}) {
-    const _a = options, { useProxy = true } = _a, fetchOptions = __objRest(_a, ["useProxy"]);
+    const _a = options, { useProxy = false } = _a, fetchOptions = __objRest(_a, ["useProxy"]); // proxy disabled by default
     const finalUrl = url.startsWith("http") ? url : `${MAIN_URL}${url}`;
-    const targetUrl = useProxy ? `${PROXY_URL}${encodeURIComponent(finalUrl)}` : finalUrl;
+    // Direct request – no proxy
+    const targetUrl = finalUrl;
     const response = yield fetch(targetUrl, __spreadValues({
       headers: HEADERS
     }, fetchOptions));
@@ -310,12 +307,13 @@ function getStreams(tmdbId, mediaType, season, episode) {
         const btnText = $btn.text();
         const quality = extractQuality(btnText);
         const type = btnText.toLowerCase().includes("eng") ? "Dub" : "Sub";
-        if (kwikUrl && kwikUrl.includes("kwik")) {
+        // Keep only 1080p Sub or 720p Sub. Remove 360p and any Dub.
+        if (kwikUrl && kwikUrl.includes("kwik") && (quality === "1080p" || quality === "720p") && type === "Sub") {
           promises.push(
             extractKwik(kwikUrl).then((res) => {
               if (res) {
                 streams.push({
-                  name: `AnimePahe (${quality} ${type})`,
+                  name: `AnimePahe (${quality} Sub)`,
                   title: `${animeTitle} - Episode ${mappedEp}`,
                   url: res.url,
                   quality,
@@ -327,7 +325,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
         }
       });
       yield Promise.all(promises);
-      const qualityOrder = { "1080p": 3, "720p": 2, "360p": 1 };
+      const qualityOrder = { "1080p": 2, "720p": 1 }; // only these two
       return streams.sort((a, b) => (qualityOrder[b.quality] || 0) - (qualityOrder[a.quality] || 0));
     } catch (error) {
       return [];
