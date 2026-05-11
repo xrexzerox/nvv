@@ -9,13 +9,12 @@ try {
 const TMDB_API_KEY = '6dc830f9624b43261325bed3bf7d0dfa';
 
 // ------------------------------------------------------------------
-// MANUAL VIDEO MAPPING – overrides dynamic extraction for problematic episodes
-// Key format: "slug-episode-X" (e.g., "welcome-to-demon-school-iruma-kun-season-2-episode-1")
+// MANUAL VIDEO MAPPING – add entries only for episodes that fail dynamic extraction.
+// Key format: "slug-episode-X" (e.g., "anime-title-season-2-episode-1")
 // Value: master.m3u8 URL (the playlist that contains #EXT-X-STREAM-INF lines)
 // ------------------------------------------------------------------
 const VIDEO_MAP = {
-  'welcome-to-demon-school-iruma-kun-season-2-episode-1': 'https://rumble.com/hls-vod/77fbdu/playlist.m3u8',
-  // Add more entries as you discover them
+  // Example: "that-time-i-got-reincarnated-as-a-slime-season-4-episode-5": "https://rumble.com/hls-vod/77fbdu/playlist.m3u8",
 };
 
 // ------------------------------------------------------------------
@@ -92,7 +91,7 @@ function fetchQualities(masterUrl) {
 }
 
 // ------------------------------------------------------------------
-// Original dynamic extraction helpers (unchanged)
+// Original dynamic extraction helpers
 // ------------------------------------------------------------------
 function decodeJwPlayerUrl(playerUrl) {
   const match = playerUrl.match(/\/jw-player\/([^/?&#]+)/);
@@ -211,11 +210,6 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return new Promise((resolve) => {
     console.log(`[animotvslash] === START for ${mediaType} ID:${tmdbId} S${seasonNum}E${episodeNum} ===`);
 
-    // Step 1: Build episode key for manual mapping
-    let baseSlug = null;
-    let episodeKey = null;
-
-    // First try to get slug from TMDB (needed for the key)
     fetchTitleFromTMDB(tmdbId, mediaType)
       .then(title => {
         if (!title) {
@@ -224,7 +218,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
           return;
         }
         console.log(`[animotvslash] TMDB title: "${title}"`);
-        baseSlug = slugify(title);
+        let baseSlug = slugify(title);
         if (SLUG_OVERRIDES[tmdbId]) {
           baseSlug = SLUG_OVERRIDES[tmdbId];
           console.log(`[animotvslash] using override slug: ${baseSlug}`);
@@ -232,7 +226,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         if (mediaType === 'tv' && seasonNum > 1) {
           baseSlug = `${baseSlug}-${seasonNum}`;
         }
-        episodeKey = `${baseSlug}-episode-${episodeNum}`;
+        const episodeKey = `${baseSlug}-episode-${episodeNum}`;
 
         // Check manual mapping first
         if (VIDEO_MAP[episodeKey]) {
@@ -251,80 +245,80 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
             }));
             resolve(streams);
           });
-        } else {
-          // Proceed with dynamic extraction
-          let pageUrl;
-          if (mediaType === 'tv') {
-            pageUrl = `https://animotvslash.org/${baseSlug}-episode-${episodeNum}/`;
-          } else {
-            pageUrl = `https://animotvslash.org/${baseSlug}/`;
-          }
-          console.log(`[animotvslash] constructed URL: ${pageUrl}`);
-          return fetch(pageUrl, { headers: HEADERS })
-            .then(res => {
-              console.log(`[animotvslash] HTTP response: ${res.status}`);
-              if (!res.ok) throw new Error(`HTTP ${res.status}`);
-              return res.text();
-            })
-            .then(html => {
-              const playerUrls = getAllPlayerUrls(html, pageUrl);
-              const postId = getPostId(html);
-              console.log(`[animotvslash] found ${playerUrls.length} player URLs:`, playerUrls);
-              console.log(`[animotvslash] post ID: ${postId || 'not found'}`);
-              const streams = [];
-              const seen = new Set();
-
-              function addStreamFromPlayerUrl(pUrl, serverHint) {
-                const videoUrl = decodeJwPlayerUrl(pUrl);
-                if (videoUrl) {
-                  console.log(`[animotvslash] decoded video URL: ${videoUrl}`);
-                  if (!seen.has(videoUrl)) {
-                    seen.add(videoUrl);
-                    let serverName = serverHint;
-                    if (!serverName) {
-                      if (pUrl.toLowerCase().includes('hard')) serverName = 'HARDSUB';
-                      else if (pUrl.toLowerCase().includes('soft')) serverName = 'SOFTSUB';
-                      else serverName = `Server${streams.length + 1}`;
-                    }
-                    streams.push({
-                      name: `ANIMOTVSLASH - ${serverName} (HD)`,
-                      title: mediaType === 'tv' ? `S${seasonNum}E${episodeNum}` : 'Movie',
-                      url: videoUrl,
-                      quality: 'HD',
-                      size: 'Unknown',
-                      headers: VIDEO_HEADERS,
-                      subtitles: [],
-                      provider: 'animotvslash'
-                    });
-                  }
-                } else {
-                  console.log(`[animotvslash] failed to decode player URL: ${pUrl}`);
-                }
-              }
-
-              for (let pUrl of playerUrls) {
-                addStreamFromPlayerUrl(pUrl, null);
-              }
-
-              if (streams.length < 2 && postId) {
-                console.log('[animotvslash] only one stream, trying AJAX fallback');
-                return fetchAdditionalPlayerUrl(postId).then(extraPlayerUrl => {
-                  if (extraPlayerUrl) {
-                    console.log(`[animotvslash] AJAX fallback returned player URL: ${extraPlayerUrl}`);
-                    addStreamFromPlayerUrl(extraPlayerUrl, 'SOFTSUB');
-                  } else {
-                    console.log('[animotvslash] AJAX fallback returned nothing');
-                  }
-                  return streams;
-                });
-              }
-              return streams;
-            })
-            .then(streams => {
-              console.log(`[animotvslash] returning ${streams.length} stream(s)`);
-              resolve(streams);
-            });
         }
+
+        // Dynamic extraction
+        let pageUrl;
+        if (mediaType === 'tv') {
+          pageUrl = `https://animotvslash.org/${baseSlug}-episode-${episodeNum}/`;
+        } else {
+          pageUrl = `https://animotvslash.org/${baseSlug}/`;
+        }
+        console.log(`[animotvslash] constructed URL: ${pageUrl}`);
+        return fetch(pageUrl, { headers: HEADERS })
+          .then(res => {
+            console.log(`[animotvslash] HTTP response: ${res.status}`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.text();
+          })
+          .then(html => {
+            const playerUrls = getAllPlayerUrls(html, pageUrl);
+            const postId = getPostId(html);
+            console.log(`[animotvslash] found ${playerUrls.length} player URLs:`, playerUrls);
+            console.log(`[animotvslash] post ID: ${postId || 'not found'}`);
+            const streams = [];
+            const seen = new Set();
+
+            function addStreamFromPlayerUrl(pUrl, serverHint) {
+              const videoUrl = decodeJwPlayerUrl(pUrl);
+              if (videoUrl) {
+                console.log(`[animotvslash] decoded video URL: ${videoUrl}`);
+                if (!seen.has(videoUrl)) {
+                  seen.add(videoUrl);
+                  let serverName = serverHint;
+                  if (!serverName) {
+                    if (pUrl.toLowerCase().includes('hard')) serverName = 'HARDSUB';
+                    else if (pUrl.toLowerCase().includes('soft')) serverName = 'SOFTSUB';
+                    else serverName = `Server${streams.length + 1}`;
+                  }
+                  streams.push({
+                    name: `ANIMOTVSLASH - ${serverName} (HD)`,
+                    title: mediaType === 'tv' ? `S${seasonNum}E${episodeNum}` : 'Movie',
+                    url: videoUrl,
+                    quality: 'HD',
+                    size: 'Unknown',
+                    headers: VIDEO_HEADERS,
+                    subtitles: [],
+                    provider: 'animotvslash'
+                  });
+                }
+              } else {
+                console.log(`[animotvslash] failed to decode player URL: ${pUrl}`);
+              }
+            }
+
+            for (let pUrl of playerUrls) {
+              addStreamFromPlayerUrl(pUrl, null);
+            }
+
+            if (streams.length < 2 && postId) {
+              console.log('[animotvslash] only one stream, trying AJAX fallback');
+              return fetchAdditionalPlayerUrl(postId).then(extraPlayerUrl => {
+                if (extraPlayerUrl) {
+                  console.log(`[animotvslash] AJAX fallback returned player URL: ${extraPlayerUrl}`);
+                  addStreamFromPlayerUrl(extraPlayerUrl, 'SOFTSUB');
+                } else {
+                  console.log('[animotvslash] AJAX fallback returned nothing');
+                }
+                return streams;
+              });
+            }
+            return streams;
+          })
+          .then(streams => {
+            console.log(`[animotvslash] returning ${streams.length} stream(s)`);
+            resolve(streams);
+          });
       })
       .catch(err => {
         console.error('[animotvslash] error:', err.message);
