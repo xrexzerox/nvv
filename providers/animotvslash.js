@@ -8,15 +8,9 @@ try {
 
 const TMDB_API_KEY = '6dc830f9624b43261325bed3bf7d0dfa';
 
-// ----------------------------------------------------------------------
-// SLUG OVERRIDES – for anime where the TMDB title does not match the site's URL.
-// Format: "tmdbId": "correct-slug"
-// Example: "114858": "farming-life-in-another-world-2"
-// Add entries as needed.
-// ----------------------------------------------------------------------
 const SLUG_OVERRIDES = {
+  // Add overrides here. Example:
   // "12345": "welcome-to-demon-school-iruma-kun",
-  // Add more here...
 };
 
 const HEADERS = {
@@ -32,9 +26,6 @@ const VIDEO_HEADERS = {
   'Accept': 'video/webm,video/ogg,video/*;q=0.9,*/*;q=0.5',
 };
 
-// ----------------------------------------------------------------------
-// Decode JW Player base64 token
-// ----------------------------------------------------------------------
 function decodeJwPlayerUrl(playerUrl) {
   const match = playerUrl.match(/\/jw-player\/([^/?&#]+)/);
   if (!match) return null;
@@ -51,9 +42,6 @@ function decodeJwPlayerUrl(playerUrl) {
   }
 }
 
-// ----------------------------------------------------------------------
-// Extract all player URLs from HTML (iframes, data-*, base64 tokens)
-// ----------------------------------------------------------------------
 function getAllPlayerUrls(html, baseUrl) {
   const urls = new Set();
   const iframeRe = /<iframe[^>]+src=["']([^"']*?\/jw-player\/[^"']+)["']/gi;
@@ -80,9 +68,6 @@ function getAllPlayerUrls(html, baseUrl) {
   return Array.from(absolute);
 }
 
-// ----------------------------------------------------------------------
-// Extract post ID from HTML
-// ----------------------------------------------------------------------
 function getPostId(html) {
   let match = html.match(/<link rel="shortlink" href="[^"]*\?p=(\d+)"/);
   if (match) return match[1];
@@ -93,9 +78,6 @@ function getPostId(html) {
   return null;
 }
 
-// ----------------------------------------------------------------------
-// Try to fetch additional player URL via AJAX (for SOFTSUB, etc.)
-// ----------------------------------------------------------------------
 function fetchAdditionalPlayerUrl(postId) {
   return new Promise((resolve) => {
     const ajaxUrl = 'https://animotvslash.org/wp-admin/admin-ajax.php';
@@ -135,9 +117,6 @@ function fetchAdditionalPlayerUrl(postId) {
   });
 }
 
-// ----------------------------------------------------------------------
-// Slugify title
-// ----------------------------------------------------------------------
 function slugify(title) {
   return title
     .toLowerCase()
@@ -147,9 +126,6 @@ function slugify(title) {
     .replace(/^-|-$/g, '');
 }
 
-// ----------------------------------------------------------------------
-// Fetch title from TMDB
-// ----------------------------------------------------------------------
 function fetchTitleFromTMDB(tmdbId, mediaType) {
   const url = mediaType === 'tv'
     ? `https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_API_KEY}`
@@ -160,19 +136,18 @@ function fetchTitleFromTMDB(tmdbId, mediaType) {
     .catch(() => null);
 }
 
-// ----------------------------------------------------------------------
-// Main exported function – returns streams with "HD" quality
-// ----------------------------------------------------------------------
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   return new Promise((resolve) => {
+    console.log(`[animotvslash] === START for ${mediaType} ID:${tmdbId} S${seasonNum}E${episodeNum} ===`);
     fetchTitleFromTMDB(tmdbId, mediaType)
       .then(title => {
         if (!title) {
+          console.log('[animotvslash] TMDB title not found, aborting');
           resolve([]);
           return;
         }
+        console.log(`[animotvslash] TMDB title: "${title}"`);
         let baseSlug = slugify(title);
-        // Apply manual override if present
         if (SLUG_OVERRIDES[tmdbId]) {
           baseSlug = SLUG_OVERRIDES[tmdbId];
           console.log(`[animotvslash] using override slug: ${baseSlug}`);
@@ -187,36 +162,43 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         console.log(`[animotvslash] constructed URL: ${pageUrl}`);
         fetch(pageUrl, { headers: HEADERS })
           .then(res => {
+            console.log(`[animotvslash] HTTP response: ${res.status}`);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             return res.text();
           })
           .then(html => {
             const playerUrls = getAllPlayerUrls(html, pageUrl);
             const postId = getPostId(html);
+            console.log(`[animotvslash] found ${playerUrls.length} player URLs:`, playerUrls);
+            console.log(`[animotvslash] post ID: ${postId || 'not found'}`);
             const streams = [];
             const seen = new Set();
 
             function addStreamFromPlayerUrl(pUrl, serverHint) {
               const videoUrl = decodeJwPlayerUrl(pUrl);
-              if (videoUrl && !seen.has(videoUrl)) {
-                seen.add(videoUrl);
-                let serverName = serverHint;
-                if (!serverName) {
-                  if (pUrl.toLowerCase().includes('hard')) serverName = 'HARDSUB';
-                  else if (pUrl.toLowerCase().includes('soft')) serverName = 'SOFTSUB';
-                  else serverName = `Server${streams.length + 1}`;
+              if (videoUrl) {
+                console.log(`[animotvslash] decoded video URL: ${videoUrl}`);
+                if (!seen.has(videoUrl)) {
+                  seen.add(videoUrl);
+                  let serverName = serverHint;
+                  if (!serverName) {
+                    if (pUrl.toLowerCase().includes('hard')) serverName = 'HARDSUB';
+                    else if (pUrl.toLowerCase().includes('soft')) serverName = 'SOFTSUB';
+                    else serverName = `Server${streams.length + 1}`;
+                  }
+                  streams.push({
+                    name: `ANIMOTVSLASH - ${serverName} (HD)`,
+                    title: mediaType === 'tv' ? `S${seasonNum}E${episodeNum}` : 'Movie',
+                    url: videoUrl,
+                    quality: 'HD',
+                    size: 'Unknown',
+                    headers: VIDEO_HEADERS,
+                    subtitles: [],
+                    provider: 'animotvslash'
+                  });
                 }
-                const quality = 'HD';
-                streams.push({
-                  name: `ANIMOTVSLASH - ${serverName} (${quality})`,
-                  title: mediaType === 'tv' ? `S${seasonNum}E${episodeNum}` : 'Movie',
-                  url: videoUrl,
-                  quality: quality,
-                  size: 'Unknown',
-                  headers: VIDEO_HEADERS,
-                  subtitles: [],
-                  provider: 'animotvslash'
-                });
+              } else {
+                console.log(`[animotvslash] failed to decode player URL: ${pUrl}`);
               }
             }
 
@@ -225,22 +207,32 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
             }
 
             if (streams.length < 2 && postId) {
+              console.log('[animotvslash] only one stream, trying AJAX fallback');
               return fetchAdditionalPlayerUrl(postId).then(extraPlayerUrl => {
                 if (extraPlayerUrl) {
+                  console.log(`[animotvslash] AJAX fallback returned player URL: ${extraPlayerUrl}`);
                   addStreamFromPlayerUrl(extraPlayerUrl, 'SOFTSUB');
+                } else {
+                  console.log('[animotvslash] AJAX fallback returned nothing');
                 }
                 return streams;
               });
             }
             return streams;
           })
-          .then(streams => resolve(streams))
+          .then(streams => {
+            console.log(`[animotvslash] returning ${streams.length} stream(s)`);
+            resolve(streams);
+          })
           .catch(err => {
-            console.error('[animotvslash] error:', err.message);
+            console.error('[animotvslash] fetch error:', err.message);
             resolve([]);
           });
       })
-      .catch(() => resolve([]));
+      .catch(err => {
+        console.error('[animotvslash] TMDB error:', err.message);
+        resolve([]);
+      });
   });
 }
 
