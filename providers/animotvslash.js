@@ -9,12 +9,12 @@ try {
 const TMDB_API_KEY = '6dc830f9624b43261325bed3bf7d0dfa';
 
 // ------------------------------------------------------------------
-// MANUAL VIDEO MAPPING – add entries only for episodes that fail dynamic extraction.
-// Key format: "slug-episode-X" (e.g., "anime-title-season-2-episode-1")
-// Value: master.m3u8 URL
+// MANUAL VIDEO MAPPING – add entries for episodes that fail dynamic extraction.
+// Key format: "slug-episode-X"
+// Value: direct video URL (mp4/m3u8) or embed URL (will open in external browser)
 // ------------------------------------------------------------------
 const VIDEO_MAP = {
-  // Example: "that-time-i-got-reincarnated-as-a-slime-season-4-episode-5": "https://rumble.com/hls-vod/77fbdu/playlist.m3u8",
+  // Example: "wistoria-wand-and-sword-episode-1": "https://example.com/video.mp4",
 };
 
 // ------------------------------------------------------------------
@@ -22,7 +22,7 @@ const VIDEO_MAP = {
 // Format: "tmdbId": "correct-slug"
 // ------------------------------------------------------------------
 const SLUG_OVERRIDES = {
-  // Example: "12345": "welcome-to-demon-school-iruma-kun",
+  // Example: "245842": "wistoria-wand-and-sword",
 };
 
 const HEADERS = {
@@ -39,22 +39,26 @@ const VIDEO_HEADERS = {
 };
 
 // ------------------------------------------------------------------
-// Helper: fetch HTML with error handling
+// Helper: fetch HTML and return { html, finalUrl }
 // ------------------------------------------------------------------
-async function fetchHTML(url) {
+async function fetchHTMLWithRedirect(url) {
   try {
     const res = await fetch(url, { headers: HEADERS, redirect: 'follow' });
+    const finalUrl = res.url;
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.text();
+    const html = await res.text();
+    return { html, finalUrl };
   } catch (err) {
     console.error(`[animotvslash] fetch error ${url}:`, err.message);
-    return null;
+    return { html: null, finalUrl: url };
   }
 }
 
-// ------------------------------------------------------------------
-// Helper: fetch JSON
-// ------------------------------------------------------------------
+async function fetchHTML(url) {
+  const { html } = await fetchHTMLWithRedirect(url);
+  return html;
+}
+
 async function fetchJSON(url) {
   try {
     const res = await fetch(url);
@@ -65,9 +69,6 @@ async function fetchJSON(url) {
   }
 }
 
-// ------------------------------------------------------------------
-// Fetch title from TMDB
-// ------------------------------------------------------------------
 async function fetchTitleFromTMDB(tmdbId, mediaType) {
   const url = mediaType === 'tv'
     ? `https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_API_KEY}`
@@ -77,9 +78,6 @@ async function fetchTitleFromTMDB(tmdbId, mediaType) {
   return mediaType === 'tv' ? (data.name || data.original_name) : (data.title || data.original_title);
 }
 
-// ------------------------------------------------------------------
-// Slugify title
-// ------------------------------------------------------------------
 function slugify(title) {
   return title.toLowerCase()
     .replace(/[^\w\s-]/g, '')
@@ -89,67 +87,60 @@ function slugify(title) {
 }
 
 // ------------------------------------------------------------------
-// Extract all possible video URLs from HTML
+// Extract video URLs from HTML (supports iframes, scripts, data attributes)
 // ------------------------------------------------------------------
 function getAllPlayerUrls(html, baseUrl) {
   const $ = cheerio.load(html);
   const urls = new Set();
 
-  // 1. Iframes
+  // Iframes
   $('iframe').each((i, el) => {
     let src = $(el).attr('src');
     if (src) urls.add(src);
   });
 
-  // 2. Video sources
+  // Video sources
   $('source').each((i, el) => {
     let src = $(el).attr('src');
     if (src) urls.add(src);
   });
 
-  // 3. Data attributes (common in players)
+  // Data attributes
   $('[data-src], [data-url], [data-video]').each((i, el) => {
     let src = $(el).attr('data-src') || $(el).attr('data-url') || $(el).attr('data-video');
     if (src) urls.add(src);
   });
 
-  // 4. Script tags containing video configuration
+  // Scripts
   $('script').each((i, el) => {
     const script = $(el).html();
     if (!script) return;
-
-    // Look for "file": "..." or "source": "..."
+    // "file": "..." or "source": "..."
     let match = script.match(/["'](?:file|source)["']\s*:\s*["']([^"']+\.(?:m3u8|mp4)[^"']*)["']/i);
     if (match) urls.add(match[1]);
-
-    // Look for raw video URLs
+    // raw .m3u8/.mp4 URLs
     match = script.match(/(https?:\/\/[^\s"']+\.(?:m3u8|mp4)[^\s"']*)/gi);
     if (match) match.forEach(u => urls.add(u));
   });
 
-  // 5. Direct search in HTML for .m3u8 or .mp4
+  // Direct search in HTML
   const directMatches = html.match(/(https?:\/\/[^\s"']+\.(?:m3u8|mp4)[^\s"']*)/gi);
   if (directMatches) directMatches.forEach(u => urls.add(u));
 
-  // Convert relative URLs to absolute
+  // Convert relative URLs
   const absolute = new Set();
   for (let url of urls) {
-    if (url.startsWith('http')) {
-      absolute.add(url);
-    } else if (url.startsWith('/')) {
-      absolute.add(baseUrl.replace(/\/$/, '') + url);
-    } else if (url.startsWith('//')) {
-      absolute.add('https:' + url);
-    }
+    if (url.startsWith('http')) absolute.add(url);
+    else if (url.startsWith('/')) absolute.add(baseUrl.replace(/\/$/, '') + url);
+    else if (url.startsWith('//')) absolute.add('https:' + url);
   }
   return Array.from(absolute);
 }
 
 // ------------------------------------------------------------------
-// Try to get post ID from page or API
+// Get post ID from page or REST API
 // ------------------------------------------------------------------
 async function getPostId(pageHtml, slug) {
-  // From page HTML
   let match = pageHtml.match(/<link rel="shortlink" href="[^"]*\?p=(\d+)"/);
   if (match) return match[1];
   match = pageHtml.match(/"post_id":"(\d+)"/);
@@ -157,7 +148,6 @@ async function getPostId(pageHtml, slug) {
   match = pageHtml.match(/\/wp-json\/wp\/v2\/posts\/(\d+)/);
   if (match) return match[1];
 
-  // Fallback to WordPress REST API using slug
   const apiUrl = `https://animotvslash.org/wp-json/wp/v2/posts?slug=${slug}`;
   const data = await fetchJSON(apiUrl);
   if (data && data.length > 0) return data[0].id;
@@ -165,7 +155,7 @@ async function getPostId(pageHtml, slug) {
 }
 
 // ------------------------------------------------------------------
-// Try to fetch video URL from Dooplayer API (like pinoymovieshub)
+// Try Dooplayer API endpoint (similar to pinoymovieshub)
 // ------------------------------------------------------------------
 async function fetchDooplayerUrl(postId, mediaType, episode) {
   const type = mediaType === 'tv' ? 'tv' : 'movie';
@@ -177,7 +167,7 @@ async function fetchDooplayerUrl(postId, mediaType, episode) {
 }
 
 // ------------------------------------------------------------------
-// Decode JW Player token URL (if present)
+// Decode JW Player token (if present)
 // ------------------------------------------------------------------
 function decodeJwPlayerUrl(url) {
   const match = url.match(/\/jw-player\/([^/?&#]+)/);
@@ -226,7 +216,8 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         url: VIDEO_MAP[episodeKey],
         quality: 'Auto',
         headers: VIDEO_HEADERS,
-        provider: 'animotvslash'
+        provider: 'animotvslash',
+        behaviorHints: { notWebReady: !VIDEO_MAP[episodeKey].match(/\.(mp4|m3u8)$/i) }
       }];
     }
 
@@ -239,15 +230,30 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     }
     console.log(`[animotvslash] Fetching page: ${pageUrl}`);
 
-    const html = await fetchHTML(pageUrl);
+    // Fetch with redirect tracking
+    const { html, finalUrl } = await fetchHTMLWithRedirect(pageUrl);
     if (!html) {
       console.log('[animotvslash] Failed to fetch page');
       return [];
     }
 
-    // Extract player URLs from HTML
+    // Check if we were redirected to P2P domain
+    if (finalUrl && (finalUrl.includes('p2pplay.pro') || finalUrl.includes('.p2pplay.pro'))) {
+      console.log(`[animotvslash] Redirected to P2P domain: ${finalUrl}`);
+      return [{
+        name: `ANIMOTVSLASH - P2P Stream (Open in Browser)`,
+        title: `S${seasonNum}E${episodeNum}`,
+        url: finalUrl,
+        quality: 'Auto',
+        headers: VIDEO_HEADERS,
+        provider: 'animotvslash',
+        behaviorHints: { notWebReady: true }
+      }];
+    }
+
+    // Normal extraction
     let playerUrls = getAllPlayerUrls(html, pageUrl);
-    console.log(`[animotvslash] Found ${playerUrls.length} URLs from HTML:`, playerUrls);
+    console.log(`[animotvslash] Found ${playerUrls.length} URLs from HTML`);
 
     // If none found, try Dooplayer API
     if (playerUrls.length === 0) {
@@ -270,7 +276,6 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     for (let url of playerUrls) {
       if (seen.has(url)) continue;
       seen.add(url);
-      // Decode JW Player URLs
       const videoUrl = decodeJwPlayerUrl(url);
       streams.push({
         name: `ANIMOTVSLASH - Stream ${streams.length + 1}`,
