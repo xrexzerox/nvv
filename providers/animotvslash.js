@@ -14,7 +14,7 @@ const TMDB_API_KEY = '6dc830f9624b43261325bed3bf7d0dfa';
 // Value: direct video URL (mp4/m3u8) or embed URL (will open in external browser)
 // ------------------------------------------------------------------
 const VIDEO_MAP = {
-  // Example: "wistoria-wand-and-sword-season-2-episode-1": "https://example.com/video.mp4",
+  // Example: "one-piece-episode-1161": "https://example.com/video.mp4",
 };
 
 // ------------------------------------------------------------------
@@ -23,6 +23,7 @@ const VIDEO_MAP = {
 // ------------------------------------------------------------------
 const SLUG_OVERRIDES = {
   // Example: "245842": "wistoria-wand-and-sword",
+  // "37854": "one-piece", // already handled by special case
 };
 
 const HEADERS = {
@@ -193,6 +194,84 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   console.log(`[animotvslash] === START for ${mediaType} TMDB ID:${tmdbId} S${seasonNum}E${episodeNum} ===`);
 
   try {
+    // ------------------------------------------------
+    // SPECIAL CASE: One Piece (TMDB ID 37854)
+    // Uses absolute episode numbers, not season/ep.
+    // ------------------------------------------------
+    if (Number(tmdbId) === 37854) {
+      const baseSlug = 'one-piece';
+      const episodeKey = `${baseSlug}-episode-${episodeNum}`;
+
+      // Check manual mapping
+      if (VIDEO_MAP[episodeKey]) {
+        console.log(`[animotvslash] Using manual mapping for ${episodeKey}`);
+        return [{
+          name: `ANIMOTVSLASH - Manual`,
+          title: `Episode ${episodeNum}`,
+          url: VIDEO_MAP[episodeKey],
+          quality: 'Auto',
+          headers: VIDEO_HEADERS,
+          provider: 'animotvslash',
+          behaviorHints: { notWebReady: !VIDEO_MAP[episodeKey].match(/\.(mp4|m3u8)$/i) }
+        }];
+      }
+
+      const pageUrl = `https://animotvslash.org/${baseSlug}-episode-${episodeNum}/`;
+      console.log(`[animotvslash] Fetching One Piece episode: ${pageUrl}`);
+      const { html, finalUrl } = await fetchHTMLWithRedirect(pageUrl);
+      if (!html) {
+        console.log('[animotvslash] Failed to fetch One Piece page');
+        return [];
+      }
+
+      if (finalUrl && (finalUrl.includes('p2pplay.pro') || finalUrl.includes('.p2pplay.pro'))) {
+        console.log(`[animotvslash] Redirected to P2P domain: ${finalUrl}`);
+        return [{
+          name: `ANIMOTVSLASH - P2P Stream (Open in Browser)`,
+          title: `Episode ${episodeNum}`,
+          url: finalUrl,
+          quality: 'Auto',
+          headers: VIDEO_HEADERS,
+          provider: 'animotvslash',
+          behaviorHints: { notWebReady: true }
+        }];
+      }
+
+      let playerUrls = getAllPlayerUrls(html, pageUrl);
+      if (playerUrls.length === 0) {
+        const postId = await getPostId(html, baseSlug);
+        if (postId) {
+          console.log(`[animotvslash] Post ID: ${postId}, trying Dooplayer API`);
+          const apiUrl = await fetchDooplayerUrl(postId, mediaType, episodeNum);
+          if (apiUrl) {
+            console.log(`[animotvslash] Dooplayer API returned: ${apiUrl}`);
+            playerUrls.push(apiUrl);
+          }
+        }
+      }
+
+      const streams = [];
+      const seen = new Set();
+      for (let url of playerUrls) {
+        if (seen.has(url)) continue;
+        seen.add(url);
+        const videoUrl = decodeJwPlayerUrl(url);
+        streams.push({
+          name: `ANIMOTVSLASH - Stream ${streams.length + 1}`,
+          title: `Episode ${episodeNum}`,
+          url: videoUrl,
+          quality: 'Auto',
+          headers: VIDEO_HEADERS,
+          provider: 'animotvslash'
+        });
+      }
+      console.log(`[animotvslash] Returning ${streams.length} stream(s) for One Piece`);
+      return streams;
+    }
+
+    // -------------------------------------------------
+    // NORMAL CASE: other TV shows and movies
+    // -------------------------------------------------
     const title = await fetchTitleFromTMDB(tmdbId, mediaType);
     if (!title) {
       console.log('[animotvslash] TMDB title not found');
@@ -205,14 +284,12 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       baseSlug = SLUG_OVERRIDES[tmdbId];
       console.log(`[animotvslash] using override slug: ${baseSlug}`);
     }
-    
-    // ----- FIX: Use "season-X" pattern for seasons > 1 -----
+
     if (mediaType === 'tv' && seasonNum > 1) {
       baseSlug = `${baseSlug}-season-${seasonNum}`;
     }
     const episodeKey = `${baseSlug}-episode-${episodeNum}`;
 
-    // Check manual mapping
     if (VIDEO_MAP[episodeKey]) {
       console.log(`[animotvslash] Using manual mapping for ${episodeKey}`);
       return [{
@@ -226,7 +303,6 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       }];
     }
 
-    // Build page URL
     let pageUrl;
     if (mediaType === 'tv') {
       pageUrl = `https://animotvslash.org/${baseSlug}-episode-${episodeNum}/`;
@@ -235,14 +311,12 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     }
     console.log(`[animotvslash] Fetching page: ${pageUrl}`);
 
-    // Fetch with redirect tracking
     const { html, finalUrl } = await fetchHTMLWithRedirect(pageUrl);
     if (!html) {
       console.log('[animotvslash] Failed to fetch page');
       return [];
     }
 
-    // Check if we were redirected to P2P domain
     if (finalUrl && (finalUrl.includes('p2pplay.pro') || finalUrl.includes('.p2pplay.pro'))) {
       console.log(`[animotvslash] Redirected to P2P domain: ${finalUrl}`);
       return [{
@@ -256,11 +330,9 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       }];
     }
 
-    // Normal extraction
     let playerUrls = getAllPlayerUrls(html, pageUrl);
     console.log(`[animotvslash] Found ${playerUrls.length} URLs from HTML`);
 
-    // If none found, try Dooplayer API
     if (playerUrls.length === 0) {
       const postId = await getPostId(html, baseSlug);
       if (postId) {
@@ -275,7 +347,6 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       }
     }
 
-    // Process all discovered URLs
     const streams = [];
     const seen = new Set();
     for (let url of playerUrls) {
