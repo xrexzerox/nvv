@@ -7,14 +7,14 @@ try {
 }
 
 const BASE_URL = 'https://pinoymovieshub.win';
-const TMDB_API_KEY = '6dc830f9624b43261325bed3bf7d0dfa'; // reuse your key
+const TMDB_API_KEY = '6dc830f9624b43261325bed3bf7d0dfa';
 
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
   'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
   'Accept-Language': 'en-US,en;q=0.9',
   'Referer': BASE_URL,
-  'Cookie': 'starstruck_7da72d90b632af60dd1158c068193d61=99f22538d0588cdd7ccfc783299f88a7' // update if expired
+  'Cookie': 'starstruck_7da72d90b632af60dd1158c068193d61=99f22538d0588cdd7ccfc783299f88a7' // refresh if expired
 };
 
 const VIDEO_HEADERS = {
@@ -22,9 +22,6 @@ const VIDEO_HEADERS = {
   'Referer': BASE_URL
 };
 
-// ------------------------------------------------------------------
-// Helper: fetch HTML with timeout and redirects
-// ------------------------------------------------------------------
 async function fetchHTML(url) {
   try {
     const res = await fetch(url, { headers: HEADERS, redirect: 'follow' });
@@ -36,9 +33,6 @@ async function fetchHTML(url) {
   }
 }
 
-// ------------------------------------------------------------------
-// Fetch JSON from TMDB or other APIs
-// ------------------------------------------------------------------
 async function fetchJSON(url) {
   try {
     const res = await fetch(url);
@@ -49,12 +43,8 @@ async function fetchJSON(url) {
   }
 }
 
-// ------------------------------------------------------------------
-// Follow internal /links/... redirect to external URL
-// ------------------------------------------------------------------
 async function resolveInternalLink(linkUrl) {
   console.log(`[pinoyhub] Following internal link: ${linkUrl}`);
-  // First, try to fetch with redirects – the server might 302 to external host
   try {
     const res = await fetch(linkUrl, { headers: HEADERS, redirect: 'follow' });
     const finalUrl = res.url;
@@ -62,43 +52,32 @@ async function resolveInternalLink(linkUrl) {
       console.log(`[pinoyhub] Redirected to: ${finalUrl}`);
       return finalUrl;
     }
-  } catch (err) {
-    // fall through to HTML parsing
-  }
-
+  } catch (err) {}
   const html = await fetchHTML(linkUrl);
   if (!html) return null;
-
   const $ = cheerio.load(html);
   const currentDomain = new URL(linkUrl).hostname;
-
-  // 1) iframe (MixDrop, Dood, etc.)
   const iframe = $('.download-top iframe, iframe[src*="/e/"]').first();
   if (iframe.length && iframe.attr('src')) {
     let src = iframe.attr('src');
     if (src.startsWith('/')) src = `https://${currentDomain}${src}`;
     return src;
   }
-
-  // 2) Byse / React: look for JSON in script tags
   let videoUrl = null;
   $('script').each((i, el) => {
     const scriptContent = $(el).html();
     if (!scriptContent) return;
-    // Look for "source":"url"
     const sourceMatch = scriptContent.match(/"source"\s*:\s*"([^"]+)"/);
     if (sourceMatch) {
       videoUrl = sourceMatch[1].replace(/\\\//g, '/');
       if (videoUrl.startsWith('/')) videoUrl = `https://${currentDomain}${videoUrl}`;
-      return false; // break
+      return false;
     }
-    // Look for "url":"...mp4"
     const urlMatch = scriptContent.match(/"url"\s*:\s*"([^"]+\.(?:m3u8|mp4)[^"]*)"/);
     if (urlMatch) {
       videoUrl = urlMatch[1];
       return false;
     }
-    // Raw video URL in script
     const rawMatch = scriptContent.match(/(https?:\/\/[^\s"']+\.(?:m3u8|mp4)[^\s"']*)/i);
     if (rawMatch) {
       videoUrl = rawMatch[1];
@@ -106,8 +85,6 @@ async function resolveInternalLink(linkUrl) {
     }
   });
   if (videoUrl) return videoUrl;
-
-  // 3) ?download button
   const downloadBtn = $('a[href="?download"], a.download-btn').first();
   if (downloadBtn.length && downloadBtn.attr('href') === '?download') {
     const fullUrl = linkUrl + '?download';
@@ -118,16 +95,12 @@ async function resolveInternalLink(linkUrl) {
       }
     } catch (err) {}
   }
-
-  // 4) Meta refresh
   const meta = $('meta[http-equiv="refresh"]');
   if (meta.length) {
     const content = meta.attr('content');
     const match = content.match(/url=(.+)/);
     if (match) return match[1];
   }
-
-  // 5) Any external link to known hosts
   const knownHosts = ['mixdrop', 'playmogo', 'dood', 'byse', 'bysesayeveum'];
   let external = null;
   $('a[href]').each((i, el) => {
@@ -140,63 +113,57 @@ async function resolveInternalLink(linkUrl) {
   return external;
 }
 
-// ------------------------------------------------------------------
-// Resolve external host (MixDrop, Byse, etc.) to direct video URL
-// ------------------------------------------------------------------
 async function resolveExternalHost(externalUrl) {
   if (!externalUrl) return null;
   if (!externalUrl.startsWith('http')) externalUrl = 'https://' + externalUrl;
   console.log(`[pinoyhub] Resolving external host: ${externalUrl}`);
-
-  // If it's already a direct video URL, return it
+  // If it's already a direct video file, return as is
   if (/\.(m3u8|mp4)(\?|$)/i.test(externalUrl)) return externalUrl;
+  // If it's a known download link (e.g., Byse), assume it's playable
+  if (externalUrl.includes('/d/') || externalUrl.includes('/dl/')) return externalUrl;
 
   const html = await fetchHTML(externalUrl);
   if (!html) return null;
-
   const $ = cheerio.load(html);
   const currentDomain = new URL(externalUrl).hostname;
 
-  // FIX: Follow iframe (e.g., /e/... from MixDrop) to get direct video
+  // Follow any iframe that points to a video (MixDrop /e/ -> /dl/)
   const iframe = $('iframe[src*="/e/"], iframe[src*="/dl/"]').first();
   if (iframe.length && iframe.attr('src')) {
     let src = iframe.attr('src');
     if (src.startsWith('/')) src = `https://${currentDomain}${src}`;
-    return resolveExternalHost(src); // recurse to get the direct video
+    return resolveExternalHost(src); // recurse
   }
 
-  // Doodstream / MixDrop token+expiry pattern
+  // Look for direct video URL in the page (e.g., from Python regex)
   const htmlStr = html;
+  const directMatch = htmlStr.match(/(https?:\/\/[^\s"']+\.(?:m3u8|mp4)[^\s"']*)/i);
+  if (directMatch) return directMatch[1];
+
+  // Token/expiry pattern (Doodstream / MixDrop)
   const tokenMatch = htmlStr.match(/token\s*[:=]\s*["']([^"']+)["']/);
   const expiryMatch = htmlStr.match(/expiry\s*[:=]\s*["']([^"']+)["']/);
   if (tokenMatch && expiryMatch) {
     const videoId = externalUrl.split('/').pop();
     const domain = externalUrl.split('/')[2];
     const direct = `https://${domain}/dl/${videoId}?token=${tokenMatch[1]}&expiry=${expiryMatch[1]}`;
-    // verification optional, skip for speed
     return direct;
   }
 
-  // file: or source:
+  // Other patterns
   const fileMatch = htmlStr.match(/file:\s*["']([^"']+\.(?:m3u8|mp4)[^"']*)["']/);
   if (fileMatch) return fileMatch[1];
   const sourceMatch = htmlStr.match(/"source":"([^"]+)"/);
   if (sourceMatch) return sourceMatch[1].replace(/\\\//g, '/');
-  const rawMatch = htmlStr.match(/(https?:\/\/[^\s"']+\.(?:m3u8|mp4)[^\s"']*)/i);
-  if (rawMatch) return rawMatch[1];
 
-  // fallback: return the external URL itself (might be an embed page)
+  // Fallback: return the original URL (might be an embed page, but try)
   return externalUrl;
 }
 
-// ------------------------------------------------------------------
-// Extract download links from movie/episode page
-// ------------------------------------------------------------------
 function extractDownloadLinks(html, title, season, episode) {
   const $ = cheerio.load(html);
   const table = $('#download .links_table table');
   if (!table.length) return [];
-
   const links = [];
   table.find('tbody tr').each((i, row) => {
     const cols = $(row).find('td');
@@ -212,9 +179,6 @@ function extractDownloadLinks(html, title, season, episode) {
   return links;
 }
 
-// ------------------------------------------------------------------
-// Get title from TMDB (movie or TV)
-// ------------------------------------------------------------------
 async function fetchTitleFromTMDB(tmdbId, mediaType) {
   const url = mediaType === 'tv'
     ? `https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_API_KEY}`
@@ -224,9 +188,6 @@ async function fetchTitleFromTMDB(tmdbId, mediaType) {
   return mediaType === 'tv' ? (data.name || data.original_name) : (data.title || data.original_title);
 }
 
-// ------------------------------------------------------------------
-// Slugify title
-// ------------------------------------------------------------------
 function slugify(title) {
   return title.toLowerCase()
     .replace(/[^\w\s-]/g, '')
@@ -235,27 +196,17 @@ function slugify(title) {
     .replace(/^-|-$/g, '');
 }
 
-// ------------------------------------------------------------------
-// Get series slug from TMDB ID
-// ------------------------------------------------------------------
 async function getSeriesSlug(tmdbId) {
   const title = await fetchTitleFromTMDB(tmdbId, 'tv');
   if (!title) throw new Error('Cannot derive series slug from TMDB');
   return slugify(title);
 }
 
-// ------------------------------------------------------------------
-// Main exported function
-// ------------------------------------------------------------------
 async function getStreams(tmdbId, mediaType, season, episode) {
   console.log(`[pinoyhub] Request: ${mediaType} ID:${tmdbId} S${season}E${episode}`);
-
   try {
-    let pageUrl;
-    let contextTitle;
-
+    let pageUrl, contextTitle;
     if (mediaType === 'movie') {
-      // For movies: we need a slug. Use TMDB title to build slug.
       const movieTitle = await fetchTitleFromTMDB(tmdbId, 'movie');
       if (!movieTitle) throw new Error('Cannot fetch movie title');
       contextTitle = movieTitle;
@@ -263,46 +214,47 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       pageUrl = `${BASE_URL}/movies/${movieSlug}/`;
     } else {
       const seriesSlug = await getSeriesSlug(tmdbId);
-      pageUrl = `${BASE_URL}/episodes/${seriesSlug}-${season}x${episode}/`;
       contextTitle = `${seriesSlug} S${season}E${episode}`;
+      pageUrl = `${BASE_URL}/episodes/${seriesSlug}-${season}x${episode}/`;
     }
-
     console.log(`[pinoyhub] Fetching page: ${pageUrl}`);
     const html = await fetchHTML(pageUrl);
-    if (!html) {
-      console.error('[pinoyhub] Failed to fetch page');
-      return [];
-    }
+    if (!html) return [];
 
     const links = extractDownloadLinks(html, contextTitle, season, episode);
-    if (links.length === 0) {
-      console.log('[pinoyhub] No download links found');
-      return [];
-    }
+    if (links.length === 0) return [];
 
     const streams = [];
     for (const link of links) {
-      // Skip subtitle only links
-      if (link.quality.toLowerCase() === 'subtitle' || link.language.toLowerCase() === 'english') {
-        console.log(`[pinoyhub] Skipping subtitle link: ${link.quality} / ${link.language}`);
-        continue;
-      }
+      if (link.quality.toLowerCase() === 'subtitle' || link.language.toLowerCase() === 'english') continue;
       console.log(`[pinoyhub] Processing ${link.quality} / ${link.language}: ${link.url}`);
       const external = await resolveInternalLink(link.url);
-      if (!external) {
-        console.log(`[pinoyhub] Failed to resolve internal link, skipping`);
-        continue;
-      }
+      if (!external) continue;
       const direct = await resolveExternalHost(external);
-      const finalUrl = direct || external;
-      streams.push({
-        name: `PinoyHub - ${link.quality} ${link.language}`,
-        title: contextTitle,
-        url: finalUrl,
-        quality: link.quality,
-        headers: VIDEO_HEADERS,
-        provider: 'pinoyhub'
-      });
+      // Accept the URL if it is not an internal PinoyHub link and not a known embed page
+      if (direct && !direct.includes('pinoymovieshub.win') && !direct.includes('/e/') && !direct.includes('/f/')) {
+        streams.push({
+          name: `PinoyHub - ${link.quality} ${link.language}`,
+          title: contextTitle,
+          url: direct,
+          quality: link.quality,
+          headers: VIDEO_HEADERS,
+          provider: 'pinoyhub',
+          behaviorHints: { notWebReady: false } // assume playable
+        });
+      } else if (direct && (direct.includes('/dl/') || direct.includes('.mp4') || direct.includes('.m3u8'))) {
+        // Also accept direct download links or video files
+        streams.push({
+          name: `PinoyHub - ${link.quality} ${link.language}`,
+          title: contextTitle,
+          url: direct,
+          quality: link.quality,
+          headers: VIDEO_HEADERS,
+          provider: 'pinoyhub'
+        });
+      } else {
+        console.log(`[pinoyhub] Rejected URL (still embed): ${direct}`);
+      }
     }
     console.log(`[pinoyhub] Returning ${streams.length} stream(s)`);
     return streams;
