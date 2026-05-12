@@ -1,214 +1,229 @@
 /**
- * pinoyhub.js
- * Fetch movie / TV episode video sources from Pinoy Movies Hub.
- * Built to integrate with generic provider APIs.
+ * pinoyhub.js - Fetch movie / TV episode video sources from Pinoy Movies Hub.
+ * Uses both the Dooplayer API and direct HTML scraping of download links.
  */
 
 // ------------------------------
 // Constants
 // ------------------------------
-
-const BASE_API = "https://pinoymovieshub.win/wp-json/dooplayer/v2";
-const REFERER_PINOY = "https://pinoymovieshub.win/";
+const BASE_URL = "https://pinoymovieshub.win";
+const API_BASE = `${BASE_URL}/wp-json/dooplayer/v2`;
+const REFERER = BASE_URL;
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36";
 
-// Headers required for API requests
 const HEADERS = {
     "User-Agent": USER_AGENT,
     "Accept": "application/json, text/javascript, */*; q=0.01",
     "X-Requested-With": "XMLHttpRequest",
-    "Referer": REFERER_PINOY
+    "Referer": REFERER
 };
 
-// Cookie (may need refresh if expired)
-const COOKIE = "starstruck_7da72d90b632af60dd1158c068193d61=99f22538d0588cdd7ccfc783299f88a7";
-
-// ------------------------------
-// Helper: Fetch and parse JSON
-// ------------------------------
-
-async function fetchJSON(url, options = {}) {
-    const res = await fetch(url, {
-        ...options,
-        headers: {
-            ...HEADERS,
-            "Cookie": COOKIE,
-            ...options.headers
-        }
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
-}
-
-// ------------------------------
-// Main Provider Function
-// ------------------------------
+// Cookie (you may need to update this periodically)
+let COOKIE = "starstruck_7da72d90b632af60dd1158c068193d61=99f22538d0588cdd7ccfc783299f88a7";
 
 /**
- * Get video streams from Pinoy Movies Hub
- * @param {string|number} tmdbId - Not directly used; here we expect the internal post ID or episode ID.
- * @param {string} mediaType - Either "movie" or "tv".
- * @param {number|string} [season] - Season number (required for TV).
- * @param {number|string} [episode] - Episode number (required for TV).
- * @returns {Promise<Array<{name: string, title: string, url: string, quality: string, headers: object, provider: string}>>}
+ * Update cookie if you obtain a fresh one
  */
-export async function getStreams(tmdbId, mediaType, season = null, episode = null) {
-    console.log(`[PinoyHub] Fetching streams for ID: ${tmdbId}, Type: ${mediaType}, S:${season} E:${episode}`);
-
-    try {
-        let requestUrl;
-
-        if (mediaType === "movie") {
-            // Movie endpoint: /wp-json/dooplayer/v2/{movie_id}
-            requestUrl = `${BASE_API}/${tmdbId}`;
-        } else if (mediaType === "tv") {
-            if (!season || !episode) {
-                console.error("[PinoyHub] Missing season or episode for TV show");
-                return [];
-            }
-            // TV episode endpoint: /wp-json/dooplayer/v2/{series_id}/tv/{episode_number}
-            // Note: The HAR shows "tv/1", but season parameter appears omitted.
-            // The dooplayer expects: /{post_id}/tv/{episode_number}
-            requestUrl = `${BASE_API}/${tmdbId}/tv/${episode}`;
-        } else {
-            console.error(`[PinoyHub] Unsupported media type: ${mediaType}`);
-            return [];
-        }
-
-        const data = await fetchJSON(requestUrl);
-        console.log("[PinoyHub] API response:", data);
-
-        // Handle both direct embed_url and manual download links
-        let streams = [];
-
-        // 1) If response contains embed_url (iframe) → try to resolve real video URL
-        if (data.embed_url) {
-            const resolved = await resolveEmbedUrl(data.embed_url);
-            if (resolved) {
-                streams.push({
-                    name: "PinoyHub",
-                    title: `PinoyHub - ${data.type || "iframe"}`,
-                    url: resolved,
-                    quality: "Auto",
-                    headers: { "Referer": data.embed_url, "User-Agent": USER_AGENT },
-                    provider: "pinoyhub"
-                });
-            } else {
-                // fallback: return embed url itself
-                streams.push({
-                    name: "PinoyHub",
-                    title: `PinoyHub - ${data.type || "iframe"}`,
-                    url: data.embed_url,
-                    quality: "Auto",
-                    headers: { "Referer": REFERER_PINOY, "User-Agent": USER_AGENT },
-                    provider: "pinoyhub"
-                });
-            }
-        }
-
-        // 2) If the API directly returns download links (alternative structure)
-        if (data.links && Array.isArray(data.links)) {
-            for (const link of data.links) {
-                if (link.url) {
-                    const finalUrl = await followRedirect(link.url);
-                    if (finalUrl) {
-                        streams.push({
-                            name: "PinoyHub",
-                            title: `PinoyHub - ${link.host || "Download"}`,
-                            url: finalUrl,
-                            quality: link.quality || "Unknown",
-                            headers: { "Referer": REFERER_PINOY, "User-Agent": USER_AGENT },
-                            provider: "pinoyhub"
-                        });
-                    }
-                }
-            }
-        }
-
-        // 3) If response contains download links in a "data" wrapper
-        if (data.data && data.data.links) {
-            for (const link of data.data.links) {
-                if (link.url) {
-                    const finalUrl = await followRedirect(link.url);
-                    if (finalUrl) {
-                        streams.push({
-                            name: "PinoyHub",
-                            title: `PinoyHub - ${link.host || "Download"}`,
-                            url: finalUrl,
-                            quality: link.quality || "Unknown",
-                            headers: { "Referer": REFERER_PINOY, "User-Agent": USER_AGENT },
-                            provider: "pinoyhub"
-                        });
-                    }
-                }
-            }
-        }
-
-        return streams;
-    } catch (error) {
-        console.error(`[PinoyHub] Error: ${error.message}`);
-        return [];
-    }
+export function setCookie(cookie) {
+    COOKIE = cookie;
 }
 
 // ------------------------------
-// Helper: Resolve embed_url to direct video URL
+// Helper: Fetch JSON from API
 // ------------------------------
+async function fetchAPI(url) {
+    const res = await fetch(url, {
+        headers: { ...HEADERS, "Cookie": COOKIE }
+    });
+    if (!res.ok) throw new Error(`API HTTP ${res.status}`);
+    return res.json();
+}
 
-async function resolveEmbedUrl(embedUrl) {
-    try {
-        console.log(`[PinoyHub] Resolving embed: ${embedUrl}`);
-        const res = await fetch(embedUrl, {
-            method: "GET",
-            headers: {
-                "User-Agent": USER_AGENT,
-                "Referer": REFERER_PINOY,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
-            }
+// ------------------------------
+// Helper: Fetch HTML page
+// ------------------------------
+async function fetchHTML(url) {
+    const res = await fetch(url, {
+        headers: { "User-Agent": USER_AGENT, "Referer": REFERER }
+    });
+    return res.text();
+}
+
+// ------------------------------
+// Extract download links from HTML (like your Python script)
+// ------------------------------
+function extractDownloadLinksFromHTML(html, animeTitle, season, episode) {
+    const $ = cheerio.load(html); // you need to import cheerio or use regex
+    const links = [];
+    $("#download .links_table tbody tr").each((i, row) => {
+        const $row = $(row);
+        const qualityCell = $row.find("td:nth-child(2) strong.quality");
+        const languageCell = $row.find("td:nth-child(3)");
+        const linkCell = $row.find("td:first-child a");
+        const url = linkCell.attr("href");
+        if (!url) return;
+        const quality = qualityCell.text().trim() || "Unknown";
+        const language = languageCell.text().trim();
+        links.push({
+            url: `${BASE_URL}${url.startsWith("/") ? url : "/" + url}`,
+            quality,
+            language,
+            title: `${animeTitle} - ${season ? `S${season}E${episode}` : "Movie"}`
         });
-        const html = await res.text();
+    });
+    return links;
+}
 
-        // Common patterns for video URLs in iframe sources
-        const patterns = [
-            /file:\s*"([^"]+)"/,                 // file:"URL"
-            /src:\s*"([^"]+)"/,                  // src:"URL"
-            /video_url:\s*"([^"]+)"/,            // video_url:"URL"
-            /"videoUrl":"([^"]+)"/,              // "videoUrl":"URL"
-            /'(https?:\/\/[^\s]+\.(?:m3u8|mp4)[^\s]*)'/ // direct .m3u8/.mp4 URL in quotes
-        ];
-
-        for (const pattern of patterns) {
-            const match = html.match(pattern);
-            if (match) return match[1];
-        }
-
-        // If no pattern matches, try to find any .m3u8 or .mp4 URL in the page
-        const directMatch = html.match(/(https?:\/\/[^\s"']+\.(?:m3u8|mp4)[^\s"']*)/i);
-        if (directMatch) return directMatch[1];
-    } catch (err) {
-        console.warn(`[PinoyHub] Failed to resolve embed ${embedUrl}: ${err.message}`);
+// ------------------------------
+// Resolve embed URL to direct video (for Mixdrop, Doodstream, Byse)
+// ------------------------------
+async function resolveEmbedToVideo(embedUrl) {
+    try {
+        const html = await fetchHTML(embedUrl);
+        // Mixdrop pattern: "file":"https://..."
+        let match = html.match(/file:\s*"([^"]+\.(?:m3u8|mp4)[^"]*)"/);
+        if (match) return match[1];
+        // Doodstream pattern: const player = new Player({ ... source: '...' })
+        match = html.match(/source:\s*['"]([^'"]+\.(?:m3u8|mp4)[^'"]*)['"]/);
+        if (match) return match[1];
+        // Byse pattern: data-video-url="..."
+        match = html.match(/data-video-url=["']([^"']+\.(?:m3u8|mp4)[^"']*)["']/);
+        if (match) return match[1];
+        // Any .m3u8 or .mp4 URL in the page
+        match = html.match(/(https?:\/\/[^\s"']+\.(?:m3u8|mp4)[^\s"']*)/i);
+        if (match) return match[1];
+    } catch (e) {
+        console.warn(`[PinoyHub] Failed to resolve ${embedUrl}:`, e.message);
     }
     return null;
 }
 
 // ------------------------------
-// Helper: Follow redirects (for download links)
+// Main provider function
 // ------------------------------
+export async function getStreams(tmdbId, mediaType, season = null, episode = null) {
+    console.log(`[PinoyHub] Request: ID=${tmdbId}, type=${mediaType}, S=${season} E=${episode}`);
+    const streams = [];
 
-async function followRedirect(url) {
     try {
-        const res = await fetch(url, {
-            method: "GET",
-            redirect: "manual",
-            headers: {
-                "User-Agent": USER_AGENT,
-                "Referer": REFERER_PINOY
+        // ---------- 1. Try API (gives embed_url) ----------
+        let apiUrl = null;
+        if (mediaType === "movie") {
+            apiUrl = `${API_BASE}/stream?id=${tmdbId}&type=movie&num=1`;
+        } else if (mediaType === "tv") {
+            if (!episode) throw new Error("Episode required for TV");
+            apiUrl = `${API_BASE}/${tmdbId}/tv/${episode}`;
+        } else {
+            throw new Error("Unsupported media type");
+        }
+
+        let apiData = null;
+        try {
+            apiData = await fetchAPI(apiUrl);
+            console.log("[PinoyHub] API response:", apiData);
+        } catch (err) {
+            console.warn("[PinoyHub] API failed, falling back to HTML scraping:", err.message);
+        }
+
+        if (apiData && apiData.embed_url) {
+            const directUrl = await resolveEmbedToVideo(apiData.embed_url);
+            if (directUrl) {
+                streams.push({
+                    name: "PinoyHub (API)",
+                    title: `${mediaType === "movie" ? "Movie" : `S${season}E${episode}`}`,
+                    url: directUrl,
+                    quality: "Auto",
+                    headers: { Referer: apiData.embed_url, "User-Agent": USER_AGENT },
+                    provider: "pinoyhub"
+                });
+            } else {
+                // Fallback: return embed URL itself (if player supports iframes)
+                streams.push({
+                    name: "PinoyHub (Embed)",
+                    title: `${mediaType === "movie" ? "Movie" : `S${season}E${episode}`}`,
+                    url: apiData.embed_url,
+                    quality: "Embed",
+                    headers: { Referer: REFERER, "User-Agent": USER_AGENT },
+                    provider: "pinoyhub"
+                });
             }
-        });
-        const location = res.headers.get("location") || res.url;
-        if (location && location !== url) return location;
-    } catch (err) {
-        console.warn(`[PinoyHub] Redirect error for ${url}: ${err.message}`);
+        }
+
+        // ---------- 2. Scrape HTML for direct download links (like Python script) ----------
+        let pageUrl = "";
+        if (mediaType === "movie") {
+            // You need a slug (e.g., "scissors") – you might need a mapping from tmdbId to slug
+            // For now assume you have a way to get the slug, or call search API.
+            pageUrl = `${BASE_URL}/movies/${tmdbId}`; // tmdbId is actually the slug here
+        } else {
+            // For TV: the episode page URL pattern from HAR: /episodes/{slug}-1x1
+            // We need to know the slug. This is tricky; you may need to search.
+            // Simpler: use the API's embed_url to get the episode page referer.
+            if (apiData && apiData.embed_url) {
+                // The referer in the HAR is like https://pinoymovieshub.win/episodes/if-wishes-could-kill-1x1
+                // We can extract from the embed request's referer? Not possible. Better to construct from title.
+                // For now, skip HTML scraping for TV unless we have a reliable slug.
+            }
+        }
+
+        // If we have a page URL (for movies or we can fetch episode page via other means)
+        if (pageUrl) {
+            const html = await fetchHTML(pageUrl);
+            // Use cheerio or regex to extract links
+            const downloadLinks = extractDownloadLinksFromHTML(html, "Pinoy Movie", season, episode);
+            for (const link of downloadLinks) {
+                // Try to resolve the download link (might be an intermediary page)
+                let finalUrl = link.url;
+                // If it's a mixdrop/doodstream/byse link, resolve it
+                if (finalUrl.includes("mixdrop") || finalUrl.includes("dood") || finalUrl.includes("byse")) {
+                    const resolved = await resolveEmbedToVideo(finalUrl);
+                    if (resolved) finalUrl = resolved;
+                }
+                streams.push({
+                    name: "PinoyHub (Download)",
+                    title: link.title,
+                    url: finalUrl,
+                    quality: link.quality,
+                    headers: { Referer: pageUrl, "User-Agent": USER_AGENT },
+                    provider: "pinoyhub"
+                });
+            }
+        }
+
+        return streams;
+    } catch (error) {
+        console.error("[PinoyHub] Error:", error.message);
+        return [];
     }
-    return url;
+}
+
+// ------------------------------
+// Simple regex-based HTML parsing if you don't have cheerio
+// ------------------------------
+function extractDownloadLinksRegex(html, title, season, episode) {
+    const links = [];
+    // Match table rows: <tr id='link-...'> ... <a href='...'> ... </a> ... <strong class='quality'>720p</strong> ...
+    const rowRegex = /<tr[^>]*id='link-\d+'>([\s\S]*?)<\/tr>/gi;
+    let rowMatch;
+    while ((rowMatch = rowRegex.exec(html)) !== null) {
+        const row = rowMatch[1];
+        const urlMatch = row.match(/<a[^>]+href=['"]([^'"]+)['"]/);
+        if (!urlMatch) continue;
+        let url = urlMatch[1];
+        if (!url.startsWith("http")) url = BASE_URL + url;
+        const qualityMatch = row.match(/<strong[^>]*class=['"]quality['"][^>]*>([^<]+)<\/strong>/);
+        const quality = qualityMatch ? qualityMatch[1].trim() : "Unknown";
+        const languageMatch = row.match(/<td[^>]*>([^<]+)<\/td>/g);
+        let language = "";
+        if (languageMatch && languageMatch.length >= 3) {
+            language = languageMatch[2].replace(/<\/?td>/g, "").trim();
+        }
+        links.push({
+            url,
+            quality,
+            language,
+            title: `${title} - ${season ? `S${season}E${episode}` : "Movie"}`
+        });
+    }
+    return links;
 }
