@@ -9,8 +9,9 @@ try {
 const TMDB_API_KEY = '6dc830f9624b43261325bed3bf7d0dfa';
 
 // ------------------------------------------------------------------
-// ONE PIECE SEASON OFFSETS – mapping season number → starting absolute episode
-// Add or update entries here when new seasons are released.
+// ONE PIECE SEASON OFFSETS
+// Map season number → starting absolute episode number.
+// Corrected: Season 23 starts at absolute episode 1156.
 // ------------------------------------------------------------------
 const ONE_PIECE_SEASON_OFFSET = {
   1: 1,
@@ -35,19 +36,17 @@ const ONE_PIECE_SEASON_OFFSET = {
   20: 430,
   21: 446,
   22: 460,
-  23: 1157,  // Season 23 starts at absolute episode 1157
-  // Add future seasons here as needed
+  23: 1156,  // Season 23 starts at episode 1156 (Elbaf Arc)
+  // 24: 1183,  // Add when season 24 is released
 };
 
 // ------------------------------------------------------------------
-// MANUAL VIDEO MAPPING – fallback for episodes that still fail
+// MANUAL VIDEO MAPPING – fallback for stubborn episodes
 // ------------------------------------------------------------------
-const VIDEO_MAP = {
-  // Example: "one-piece-episode-1161": "https://rumble.com/hls-vod/77h4iq/playlist.m3u8",
-};
+const VIDEO_MAP = {};
 
 // ------------------------------------------------------------------
-// SLUG OVERRIDES – for anime where the TMDB title doesn't match the slug
+// SLUG OVERRIDES – for anime where TMDB title doesn't match the URL slug
 // ------------------------------------------------------------------
 const SLUG_OVERRIDES = {};
 
@@ -65,7 +64,7 @@ const VIDEO_HEADERS = {
 };
 
 // ------------------------------------------------------------------
-// Helper functions
+// Helper: fetch HTML and return { html, finalUrl }
 // ------------------------------------------------------------------
 async function fetchHTMLWithRedirect(url) {
   try {
@@ -95,6 +94,9 @@ async function fetchJSON(url) {
   }
 }
 
+// ------------------------------------------------------------------
+// Fetch title from TMDB
+// ------------------------------------------------------------------
 async function fetchTitleFromTMDB(tmdbId, mediaType) {
   const url = mediaType === 'tv'
     ? `https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_API_KEY}`
@@ -112,6 +114,9 @@ function slugify(title) {
     .replace(/^-|-$/g, '');
 }
 
+// ------------------------------------------------------------------
+// Extract video URLs from HTML (iframes, scripts, etc.)
+// ------------------------------------------------------------------
 function getAllPlayerUrls(html, baseUrl) {
   const $ = cheerio.load(html);
   const urls = new Set();
@@ -152,6 +157,9 @@ function getAllPlayerUrls(html, baseUrl) {
   return Array.from(absolute);
 }
 
+// ------------------------------------------------------------------
+// Get post ID from page or REST API
+// ------------------------------------------------------------------
 async function getPostId(pageHtml, slug) {
   let match = pageHtml.match(/<link rel="shortlink" href="[^"]*\?p=(\d+)"/);
   if (match) return match[1];
@@ -166,6 +174,9 @@ async function getPostId(pageHtml, slug) {
   return null;
 }
 
+// ------------------------------------------------------------------
+// Try Dooplayer API endpoint (similar to pinoymovieshub)
+// ------------------------------------------------------------------
 async function fetchDooplayerUrl(postId, mediaType, episode) {
   const type = mediaType === 'tv' ? 'tv' : 'movie';
   const apiUrl = `https://animotvslash.org/wp-json/dooplayer/v2/${postId}/${type}/${episode}`;
@@ -175,6 +186,9 @@ async function fetchDooplayerUrl(postId, mediaType, episode) {
   return null;
 }
 
+// ------------------------------------------------------------------
+// Decode JW Player token (if present)
+// ------------------------------------------------------------------
 function decodeJwPlayerUrl(url) {
   const match = url.match(/\/jw-player\/([^/?&#]+)/);
   if (!match) return url;
@@ -195,25 +209,23 @@ function decodeJwPlayerUrl(url) {
 async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
   console.log(`[animotvslash] === START for ${mediaType} TMDB ID:${tmdbId} S${seasonNum}E${episodeNum} ===`);
 
-  // ------------------------------------------------------------------
-  // SPECIAL CASE: One Piece (TMDB ID 37854)
-  // Convert season/episode → absolute episode number using the mapping table.
-  // ------------------------------------------------------------------
+  // ==========================================================================
+  // SPECIAL CASE: One Piece (TMDB ID 37854) – use absolute episode numbers
+  // ==========================================================================
   if (Number(tmdbId) === 37854) {
-    if (ONE_PIECE_SEASON_OFFSET[seasonNum] !== undefined) {
-      const absoluteEpisode = ONE_PIECE_SEASON_OFFSET[seasonNum] + (episodeNum - 1);
-      const absoluteUrl = `https://animotvslash.org/one-piece-episode-${absoluteEpisode}/`;
-      console.log(`[animotvslash] One Piece: S${seasonNum}E${episodeNum} → absolute episode ${absoluteEpisode} → ${absoluteUrl}`);
+    const offset = ONE_PIECE_SEASON_OFFSET[seasonNum];
+    if (offset !== undefined) {
+      const absoluteEp = offset + (episodeNum - 1);
+      const absoluteUrl = `https://animotvslash.org/one-piece-episode-${absoluteEp}/`;
+      console.log(`[animotvslash] One Piece: S${seasonNum}E${episodeNum} → absolute episode ${absoluteEp} → ${absoluteUrl}`);
 
-      // Fetch the absolute episode page using the same extraction logic as normal episodes
       const { html, finalUrl } = await fetchHTMLWithRedirect(absoluteUrl);
       if (html) {
-        // Check for P2P redirect
         if (finalUrl && (finalUrl.includes('p2pplay.pro') || finalUrl.includes('.p2pplay.pro'))) {
           console.log(`[animotvslash] Redirected to P2P domain: ${finalUrl}`);
           return [{
             name: `ANIMOTVSLASH - P2P Stream (Open in Browser)`,
-            title: `Episode ${absoluteEpisode}`,
+            title: `Episode ${absoluteEp}`,
             url: finalUrl,
             quality: 'Auto',
             headers: VIDEO_HEADERS,
@@ -223,13 +235,13 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         }
 
         let playerUrls = getAllPlayerUrls(html, absoluteUrl);
-        console.log(`[animotvslash] Found ${playerUrls.length} URLs from HTML for One Piece episode ${absoluteEpisode}`);
+        console.log(`[animotvslash] Found ${playerUrls.length} URLs from HTML for One Piece episode ${absoluteEp}`);
 
         if (playerUrls.length === 0) {
           const postId = await getPostId(html, 'one-piece');
           if (postId) {
             console.log(`[animotvslash] Post ID: ${postId}, trying Dooplayer API`);
-            const apiUrl = await fetchDooplayerUrl(postId, mediaType, absoluteEpisode);
+            const apiUrl = await fetchDooplayerUrl(postId, mediaType, absoluteEp);
             if (apiUrl) {
               console.log(`[animotvslash] Dooplayer API returned: ${apiUrl}`);
               playerUrls.push(apiUrl);
@@ -245,7 +257,7 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
           const videoUrl = decodeJwPlayerUrl(url);
           streams.push({
             name: `ANIMOTVSLASH - Stream ${streams.length + 1}`,
-            title: `Episode ${absoluteEpisode}`,
+            title: `Episode ${absoluteEp}`,
             url: videoUrl,
             quality: 'Auto',
             headers: VIDEO_HEADERS,
@@ -255,16 +267,16 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         console.log(`[animotvslash] Returning ${streams.length} stream(s) for One Piece`);
         return streams;
       } else {
-        console.log(`[animotvslash] Failed to fetch One Piece absolute episode page (${absoluteUrl}) – falling back to normal logic`);
+        console.log(`[animotvslash] Failed to fetch One Piece page (${absoluteUrl}) – falling back to normal logic`);
       }
     } else {
-      console.log(`[animotvslash] One Piece season ${seasonNum} not mapped; falling back to normal logic`);
+      console.log(`[animotvslash] One Piece season ${seasonNum} not mapped – falling back to normal logic`);
     }
   }
 
-  // ------------------------------------------------------------------
-  // NORMAL EXTRACTION FOR ALL OTHER ANIME (including One Piece fallback)
-  // ------------------------------------------------------------------
+  // ==========================================================================
+  // NORMAL EXTRACTION for all other anime (including One Piece fallback)
+  // ==========================================================================
   try {
     const title = await fetchTitleFromTMDB(tmdbId, mediaType);
     if (!title) {
@@ -279,11 +291,14 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       console.log(`[animotvslash] using override slug: ${baseSlug}`);
     }
 
+    // For TV, add season suffix if season > 1
     if (mediaType === 'tv' && seasonNum > 1) {
       baseSlug = `${baseSlug}-season-${seasonNum}`;
     }
+
     const episodeKey = `${baseSlug}-episode-${episodeNum}`;
 
+    // Check manual mapping
     if (VIDEO_MAP[episodeKey]) {
       console.log(`[animotvslash] Using manual mapping for ${episodeKey}`);
       return [{
@@ -297,6 +312,7 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       }];
     }
 
+    // Build page URL
     let pageUrl;
     if (mediaType === 'tv') {
       pageUrl = `https://animotvslash.org/${baseSlug}-episode-${episodeNum}/`;
@@ -311,6 +327,7 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       return [];
     }
 
+    // Check for P2P redirect
     if (finalUrl && (finalUrl.includes('p2pplay.pro') || finalUrl.includes('.p2pplay.pro'))) {
       console.log(`[animotvslash] Redirected to P2P domain: ${finalUrl}`);
       return [{
@@ -335,8 +352,6 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         if (apiUrl) {
           console.log(`[animotvslash] Dooplayer API returned: ${apiUrl}`);
           playerUrls.push(apiUrl);
-        } else {
-          console.log('[animotvslash] Dooplayer API returned nothing');
         }
       }
     }
