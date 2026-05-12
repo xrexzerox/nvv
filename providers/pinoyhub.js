@@ -37,6 +37,19 @@ async function fetchHTML(url) {
 }
 
 // ------------------------------------------------------------------
+// Fetch JSON from TMDB or other APIs
+// ------------------------------------------------------------------
+async function fetchJSON(url) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+// ------------------------------------------------------------------
 // Follow internal /links/... redirect to external URL
 // ------------------------------------------------------------------
 async function resolveInternalLink(linkUrl) {
@@ -144,15 +157,15 @@ async function resolveExternalHost(externalUrl) {
   const $ = cheerio.load(html);
   const currentDomain = new URL(externalUrl).hostname;
 
-  // Follow iframe again
+  // FIX: Follow iframe (e.g., /e/... from MixDrop) to get direct video
   const iframe = $('iframe[src*="/e/"], iframe[src*="/dl/"]').first();
   if (iframe.length && iframe.attr('src')) {
     let src = iframe.attr('src');
     if (src.startsWith('/')) src = `https://${currentDomain}${src}`;
-    return resolveExternalHost(src); // recurse
+    return resolveExternalHost(src); // recurse to get the direct video
   }
 
-  // Doodstream / MixDrop token+expiry
+  // Doodstream / MixDrop token+expiry pattern
   const htmlStr = html;
   const tokenMatch = htmlStr.match(/token\s*[:=]\s*["']([^"']+)["']/);
   const expiryMatch = htmlStr.match(/expiry\s*[:=]\s*["']([^"']+)["']/);
@@ -160,7 +173,7 @@ async function resolveExternalHost(externalUrl) {
     const videoId = externalUrl.split('/').pop();
     const domain = externalUrl.split('/')[2];
     const direct = `https://${domain}/dl/${videoId}?token=${tokenMatch[1]}&expiry=${expiryMatch[1]}`;
-    // verify (optional, can skip for speed)
+    // verification optional, skip for speed
     return direct;
   }
 
@@ -177,7 +190,7 @@ async function resolveExternalHost(externalUrl) {
 }
 
 // ------------------------------------------------------------------
-// Extract download links from the HTML page (movie or episode)
+// Extract download links from movie/episode page
 // ------------------------------------------------------------------
 function extractDownloadLinks(html, title, season, episode) {
   const $ = cheerio.load(html);
@@ -200,7 +213,19 @@ function extractDownloadLinks(html, title, season, episode) {
 }
 
 // ------------------------------------------------------------------
-// Get series slug from TMDB ID (for TV episodes)
+// Get title from TMDB (movie or TV)
+// ------------------------------------------------------------------
+async function fetchTitleFromTMDB(tmdbId, mediaType) {
+  const url = mediaType === 'tv'
+    ? `https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_API_KEY}`
+    : `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${TMDB_API_KEY}`;
+  const data = await fetchJSON(url);
+  if (!data) return null;
+  return mediaType === 'tv' ? (data.name || data.original_name) : (data.title || data.original_title);
+}
+
+// ------------------------------------------------------------------
+// Slugify title
 // ------------------------------------------------------------------
 function slugify(title) {
   return title.toLowerCase()
@@ -210,33 +235,34 @@ function slugify(title) {
     .replace(/^-|-$/g, '');
 }
 
+// ------------------------------------------------------------------
+// Get series slug from TMDB ID
+// ------------------------------------------------------------------
 async function getSeriesSlug(tmdbId) {
-  const url = `https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_API_KEY}`;
-  const res = await fetch(url);
-  if (!res.ok) return null;
-  const data = await res.json();
-  const title = data.name || data.original_name;
+  const title = await fetchTitleFromTMDB(tmdbId, 'tv');
+  if (!title) throw new Error('Cannot derive series slug from TMDB');
   return slugify(title);
 }
 
 // ------------------------------------------------------------------
-// Main exported function (same interface as other providers)
+// Main exported function
 // ------------------------------------------------------------------
 async function getStreams(tmdbId, mediaType, season, episode) {
   console.log(`[pinoyhub] Request: ${mediaType} ID:${tmdbId} S${season}E${episode}`);
 
   try {
     let pageUrl;
-    let contextTitle = '';
+    let contextTitle;
 
     if (mediaType === 'movie') {
-      // For movies, tmdbId is actually the slug (e.g., "scissors")
-      pageUrl = `${BASE_URL}/movies/${tmdbId}/`;
-      contextTitle = `Movie: ${tmdbId}`;
+      // For movies: we need a slug. Use TMDB title to build slug.
+      const movieTitle = await fetchTitleFromTMDB(tmdbId, 'movie');
+      if (!movieTitle) throw new Error('Cannot fetch movie title');
+      contextTitle = movieTitle;
+      const movieSlug = slugify(movieTitle);
+      pageUrl = `${BASE_URL}/movies/${movieSlug}/`;
     } else {
-      // For TV, we need the series slug from TMDB
       const seriesSlug = await getSeriesSlug(tmdbId);
-      if (!seriesSlug) throw new Error('Cannot derive series slug from TMDB');
       pageUrl = `${BASE_URL}/episodes/${seriesSlug}-${season}x${episode}/`;
       contextTitle = `${seriesSlug} S${season}E${episode}`;
     }
@@ -250,18 +276,17 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
     const links = extractDownloadLinks(html, contextTitle, season, episode);
     if (links.length === 0) {
-      console.log('[pinoyhub] No download links found on page');
+      console.log('[pinoyhub] No download links found');
       return [];
     }
 
     const streams = [];
     for (const link of links) {
-      // Skip subtitle only links (English language or quality "Subtitle")
+      // Skip subtitle only links
       if (link.quality.toLowerCase() === 'subtitle' || link.language.toLowerCase() === 'english') {
         console.log(`[pinoyhub] Skipping subtitle link: ${link.quality} / ${link.language}`);
         continue;
       }
-
       console.log(`[pinoyhub] Processing ${link.quality} / ${link.language}: ${link.url}`);
       const external = await resolveInternalLink(link.url);
       if (!external) {
@@ -269,8 +294,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         continue;
       }
       const direct = await resolveExternalHost(external);
-      const finalUrl = direct || external; // fallback to external if resolution failed
-
+      const finalUrl = direct || external;
       streams.push({
         name: `PinoyHub - ${link.quality} ${link.language}`,
         title: contextTitle,
@@ -280,7 +304,6 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         provider: 'pinoyhub'
       });
     }
-
     console.log(`[pinoyhub] Returning ${streams.length} stream(s)`);
     return streams;
   } catch (err) {
