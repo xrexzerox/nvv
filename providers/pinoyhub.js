@@ -24,7 +24,7 @@ const VIDEO_HEADERS = {
 };
 
 // ------------------------------------------------------------------
-// Helper: fetch HTML with redirects
+// Helper: fetch HTML
 // ------------------------------------------------------------------
 async function fetchHTML(url) {
   try {
@@ -64,7 +64,7 @@ async function resolveInternalLink(linkUrl) {
 }
 
 // ------------------------------------------------------------------
-// Extract the download links table from the page
+// Extract download links from the page
 // ------------------------------------------------------------------
 function extractDownloadLinks(html) {
   const $ = cheerio.load(html);
@@ -127,14 +127,18 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         return [];
       }
       console.log(`[pinoyhub] TMDB title: "${movieTitle}"`);
-      displayTitle = 'Movie';
+      displayTitle = movieTitle; // use full movie title
       const movieSlug = slugify(movieTitle);
       pageUrl = `${BASE_URL}/movies/${movieSlug}/`;
     } else {
-      const seriesSlug = await getSeriesSlug(tmdbId);
-      const originalTitle = await fetchTitleFromTMDB(tmdbId, 'tv');
-      console.log(`[pinoyhub] TMDB title: "${originalTitle}"`);
-      displayTitle = `S${season}E${episode}`;
+      const seriesTitle = await fetchTitleFromTMDB(tmdbId, 'tv');
+      if (!seriesTitle) {
+        console.log('[pinoyhub] TMDB title not found');
+        return [];
+      }
+      console.log(`[pinoyhub] TMDB title: "${seriesTitle}"`);
+      displayTitle = `${seriesTitle} S${season}E${episode}`;
+      const seriesSlug = slugify(seriesTitle);
       pageUrl = `${BASE_URL}/episodes/${seriesSlug}-${season}x${episode}/`;
     }
 
@@ -161,8 +165,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
         url: externalUrl,
         quality: 'Auto',
         headers: VIDEO_HEADERS,
-        provider: 'pinoyhub',
-        behaviorHints: { notWebReady: true }
+        provider: 'pinoyhub'
       });
     }
 
