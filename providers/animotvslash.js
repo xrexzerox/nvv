@@ -11,7 +11,7 @@ const TMDB_API_KEY = '6dc830f9624b43261325bed3bf7d0dfa';
 // ------------------------------------------------------------------
 // MANUAL VIDEO MAPPING – add entries only for episodes that fail dynamic extraction.
 // Key format: "slug-episode-X" (e.g., "anime-title-season-2-episode-1")
-// Value: master.m3u8 URL (the playlist that contains #EXT-X-STREAM-INF lines)
+// Value: master.m3u8 URL
 // ------------------------------------------------------------------
 const VIDEO_MAP = {
   // Example: "that-time-i-got-reincarnated-as-a-slime-season-4-episode-5": "https://rumble.com/hls-vod/77fbdu/playlist.m3u8",
@@ -36,295 +36,258 @@ const VIDEO_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
   'Referer': 'https://animotvslash.org/',
   'Accept': 'video/webm,video/ogg,video/*;q=0.9,*/*;q=0.5',
-  'Accept-Encoding': 'identity',
 };
 
 // ------------------------------------------------------------------
-// Helper: fetch and parse a master playlist to extract quality variants
+// Helper: fetch HTML with error handling
 // ------------------------------------------------------------------
-function fetchQualities(masterUrl) {
-  return new Promise((resolve) => {
-    fetch(masterUrl, { headers: HEADERS })
-      .then(res => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.text();
-      })
-      .then(data => {
-        const lines = data.split('\n');
-        const variants = [];
-        let currentQuality = null;
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i].trim();
-          if (line.startsWith('#EXT-X-STREAM-INF')) {
-            const resolutionMatch = line.match(/RESOLUTION=([\dx]+)/);
-            const bandwidthMatch = line.match(/BANDWIDTH=(\d+)/);
-            if (resolutionMatch) {
-              currentQuality = resolutionMatch[1];
-            } else if (bandwidthMatch) {
-              const bw = parseInt(bandwidthMatch[1]);
-              if (bw >= 4000000) currentQuality = '1080p';
-              else if (bw >= 2000000) currentQuality = '720p';
-              else if (bw >= 800000) currentQuality = '480p';
-              else currentQuality = '360p';
-            }
-          } else if (currentQuality && line && !line.startsWith('#')) {
-            let variantUrl = line;
-            if (!variantUrl.startsWith('http')) {
-              const base = masterUrl.substring(0, masterUrl.lastIndexOf('/') + 1);
-              variantUrl = base + variantUrl;
-            }
-            variants.push({ quality: currentQuality, url: variantUrl });
-            currentQuality = null;
-          }
-        }
-        if (variants.length === 0) {
-          resolve([{ quality: 'Auto', url: masterUrl }]);
-        } else {
-          resolve(variants);
-        }
-      })
-      .catch(err => {
-        console.error('[animotvslash] Failed to fetch master playlist:', err);
-        resolve([{ quality: 'Auto', url: masterUrl }]);
-      });
-  });
-}
-
-// ------------------------------------------------------------------
-// Original dynamic extraction helpers
-// ------------------------------------------------------------------
-function decodeJwPlayerUrl(playerUrl) {
-  const match = playerUrl.match(/\/jw-player\/([^/?&#]+)/);
-  if (!match) return null;
-  let b64 = match[1];
-  while (b64.length % 4) b64 += '=';
-  b64 = b64.replace(/-/g, '+').replace(/_/g, '/');
+async function fetchHTML(url) {
   try {
-    const decoded = atob(b64);
-    const data = JSON.parse(decoded);
-    return data.url || null;
-  } catch (e) {
-    console.log('[animotvslash] decode error:', e.message);
+    const res = await fetch(url, { headers: HEADERS, redirect: 'follow' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.text();
+  } catch (err) {
+    console.error(`[animotvslash] fetch error ${url}:`, err.message);
     return null;
   }
 }
 
-function getAllPlayerUrls(html, baseUrl) {
-  const urls = new Set();
-  const iframeRe = /<iframe[^>]+src=["']([^"']*?\/jw-player\/[^"']+)["']/gi;
-  let match;
-  while ((match = iframeRe.exec(html)) !== null) {
-    if (match[1]) urls.add(match[1]);
+// ------------------------------------------------------------------
+// Helper: fetch JSON
+// ------------------------------------------------------------------
+async function fetchJSON(url) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
   }
-  const dataRe = /data-(?:src|url)=["']([^"']*?\/jw-player\/[^"']+)["']/gi;
-  while ((match = dataRe.exec(html)) !== null) {
-    if (match[1]) urls.add(match[1]);
-  }
-  const tokenRe = /(eyJ[a-zA-Z0-9+/=]+)['"]/g;
-  while ((match = tokenRe.exec(html)) !== null) {
-    const token = match[1];
-    if (token.length > 20 && token.startsWith('eyJ')) {
-      urls.add(`https://animotvslash.org/jw-player/${token}/`);
-    }
-  }
-  const absolute = new Set();
-  for (let url of urls) {
-    if (url.startsWith('http')) absolute.add(url);
-    else absolute.add(baseUrl.replace(/\/$/, '') + '/' + url.replace(/^\//, ''));
-  }
-  return Array.from(absolute);
 }
 
-function getPostId(html) {
-  let match = html.match(/<link rel="shortlink" href="[^"]*\?p=(\d+)"/);
-  if (match) return match[1];
-  match = html.match(/"post_id":"(\d+)"/);
-  if (match) return match[1];
-  match = html.match(/\/wp-json\/wp\/v2\/posts\/(\d+)/);
-  if (match) return match[1];
-  return null;
+// ------------------------------------------------------------------
+// Fetch title from TMDB
+// ------------------------------------------------------------------
+async function fetchTitleFromTMDB(tmdbId, mediaType) {
+  const url = mediaType === 'tv'
+    ? `https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_API_KEY}`
+    : `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${TMDB_API_KEY}`;
+  const data = await fetchJSON(url);
+  if (!data) return null;
+  return mediaType === 'tv' ? (data.name || data.original_name) : (data.title || data.original_title);
 }
 
-function fetchAdditionalPlayerUrl(postId) {
-  return new Promise((resolve) => {
-    const ajaxUrl = 'https://animotvslash.org/wp-admin/admin-ajax.php';
-    const actions = ['get_embed', 'get_video', 'get_player', 'load_player', 'get_video_sources', 'embed'];
-    let index = 0;
-    function tryNext() {
-      if (index >= actions.length) {
-        resolve(null);
-        return;
-      }
-      const action = actions[index];
-      const params = new URLSearchParams();
-      params.append('action', action);
-      params.append('post_id', postId);
-      fetch(ajaxUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: params.toString()
-      })
-        .then(res => res.json())
-        .then(data => {
-          const str = JSON.stringify(data);
-          const playerMatch = str.match(/\/jw-player\/([^"']+)/);
-          if (playerMatch) {
-            resolve(`https://animotvslash.org/jw-player/${playerMatch[1]}`);
-          } else {
-            index++;
-            tryNext();
-          }
-        })
-        .catch(() => {
-          index++;
-          tryNext();
-        });
-    }
-    tryNext();
-  });
-}
-
+// ------------------------------------------------------------------
+// Slugify title
+// ------------------------------------------------------------------
 function slugify(title) {
-  return title
-    .toLowerCase()
+  return title.toLowerCase()
     .replace(/[^\w\s-]/g, '')
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
 }
 
-function fetchTitleFromTMDB(tmdbId, mediaType) {
-  const url = mediaType === 'tv'
-    ? `https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_API_KEY}`
-    : `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${TMDB_API_KEY}`;
-  return fetch(url)
-    .then(res => res.json())
-    .then(data => mediaType === 'tv' ? (data.name || data.original_name) : (data.title || data.original_title))
-    .catch(() => null);
+// ------------------------------------------------------------------
+// Extract all possible video URLs from HTML
+// ------------------------------------------------------------------
+function getAllPlayerUrls(html, baseUrl) {
+  const $ = cheerio.load(html);
+  const urls = new Set();
+
+  // 1. Iframes
+  $('iframe').each((i, el) => {
+    let src = $(el).attr('src');
+    if (src) urls.add(src);
+  });
+
+  // 2. Video sources
+  $('source').each((i, el) => {
+    let src = $(el).attr('src');
+    if (src) urls.add(src);
+  });
+
+  // 3. Data attributes (common in players)
+  $('[data-src], [data-url], [data-video]').each((i, el) => {
+    let src = $(el).attr('data-src') || $(el).attr('data-url') || $(el).attr('data-video');
+    if (src) urls.add(src);
+  });
+
+  // 4. Script tags containing video configuration
+  $('script').each((i, el) => {
+    const script = $(el).html();
+    if (!script) return;
+
+    // Look for "file": "..." or "source": "..."
+    let match = script.match(/["'](?:file|source)["']\s*:\s*["']([^"']+\.(?:m3u8|mp4)[^"']*)["']/i);
+    if (match) urls.add(match[1]);
+
+    // Look for raw video URLs
+    match = script.match(/(https?:\/\/[^\s"']+\.(?:m3u8|mp4)[^\s"']*)/gi);
+    if (match) match.forEach(u => urls.add(u));
+  });
+
+  // 5. Direct search in HTML for .m3u8 or .mp4
+  const directMatches = html.match(/(https?:\/\/[^\s"']+\.(?:m3u8|mp4)[^\s"']*)/gi);
+  if (directMatches) directMatches.forEach(u => urls.add(u));
+
+  // Convert relative URLs to absolute
+  const absolute = new Set();
+  for (let url of urls) {
+    if (url.startsWith('http')) {
+      absolute.add(url);
+    } else if (url.startsWith('/')) {
+      absolute.add(baseUrl.replace(/\/$/, '') + url);
+    } else if (url.startsWith('//')) {
+      absolute.add('https:' + url);
+    }
+  }
+  return Array.from(absolute);
+}
+
+// ------------------------------------------------------------------
+// Try to get post ID from page or API
+// ------------------------------------------------------------------
+async function getPostId(pageHtml, slug) {
+  // From page HTML
+  let match = pageHtml.match(/<link rel="shortlink" href="[^"]*\?p=(\d+)"/);
+  if (match) return match[1];
+  match = pageHtml.match(/"post_id":"(\d+)"/);
+  if (match) return match[1];
+  match = pageHtml.match(/\/wp-json\/wp\/v2\/posts\/(\d+)/);
+  if (match) return match[1];
+
+  // Fallback to WordPress REST API using slug
+  const apiUrl = `https://animotvslash.org/wp-json/wp/v2/posts?slug=${slug}`;
+  const data = await fetchJSON(apiUrl);
+  if (data && data.length > 0) return data[0].id;
+  return null;
+}
+
+// ------------------------------------------------------------------
+// Try to fetch video URL from Dooplayer API (like pinoymovieshub)
+// ------------------------------------------------------------------
+async function fetchDooplayerUrl(postId, mediaType, episode) {
+  const type = mediaType === 'tv' ? 'tv' : 'movie';
+  const apiUrl = `https://animotvslash.org/wp-json/dooplayer/v2/${postId}/${type}/${episode}`;
+  const data = await fetchJSON(apiUrl);
+  if (data && data.embed_url) return data.embed_url;
+  if (data && data.source) return data.source;
+  return null;
+}
+
+// ------------------------------------------------------------------
+// Decode JW Player token URL (if present)
+// ------------------------------------------------------------------
+function decodeJwPlayerUrl(url) {
+  const match = url.match(/\/jw-player\/([^/?&#]+)/);
+  if (!match) return url;
+  let b64 = match[1];
+  while (b64.length % 4) b64 += '=';
+  b64 = b64.replace(/-/g, '+').replace(/_/g, '/');
+  try {
+    const decoded = atob(b64);
+    const data = JSON.parse(decoded);
+    if (data.url) return data.url;
+  } catch (e) {}
+  return url;
 }
 
 // ------------------------------------------------------------------
 // Main exported function
 // ------------------------------------------------------------------
-function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
-  return new Promise((resolve) => {
-    console.log(`[animotvslash] === START for ${mediaType} ID:${tmdbId} S${seasonNum}E${episodeNum} ===`);
+async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
+  console.log(`[animotvslash] === START for ${mediaType} ID:${tmdbId} S${seasonNum}E${episodeNum} ===`);
 
-    fetchTitleFromTMDB(tmdbId, mediaType)
-      .then(title => {
-        if (!title) {
-          console.log('[animotvslash] TMDB title not found, aborting');
-          resolve([]);
-          return;
-        }
-        console.log(`[animotvslash] TMDB title: "${title}"`);
-        let baseSlug = slugify(title);
-        if (SLUG_OVERRIDES[tmdbId]) {
-          baseSlug = SLUG_OVERRIDES[tmdbId];
-          console.log(`[animotvslash] using override slug: ${baseSlug}`);
-        }
-        if (mediaType === 'tv' && seasonNum > 1) {
-          baseSlug = `${baseSlug}-${seasonNum}`;
-        }
-        const episodeKey = `${baseSlug}-episode-${episodeNum}`;
+  try {
+    const title = await fetchTitleFromTMDB(tmdbId, mediaType);
+    if (!title) {
+      console.log('[animotvslash] TMDB title not found');
+      return [];
+    }
+    console.log(`[animotvslash] TMDB title: "${title}"`);
 
-        // Check manual mapping first
-        if (VIDEO_MAP[episodeKey]) {
-          console.log(`[animotvslash] Using manual mapping for ${episodeKey}`);
-          const masterUrl = VIDEO_MAP[episodeKey];
-          return fetchQualities(masterUrl).then(variants => {
-            const streams = variants.map(v => ({
-              name: `ANIMOTVSLASH - ${v.quality}`,
-              title: mediaType === 'tv' ? `S${seasonNum}E${episodeNum}` : 'Movie',
-              url: v.url,
-              quality: v.quality,
-              size: 'Unknown',
-              headers: VIDEO_HEADERS,
-              subtitles: [],
-              provider: 'animotvslash',
-            }));
-            resolve(streams);
-          });
-        }
+    let baseSlug = slugify(title);
+    if (SLUG_OVERRIDES[tmdbId]) {
+      baseSlug = SLUG_OVERRIDES[tmdbId];
+      console.log(`[animotvslash] using override slug: ${baseSlug}`);
+    }
+    if (mediaType === 'tv' && seasonNum > 1) {
+      baseSlug = `${baseSlug}-${seasonNum}`;
+    }
+    const episodeKey = `${baseSlug}-episode-${episodeNum}`;
 
-        // Dynamic extraction
-        let pageUrl;
-        if (mediaType === 'tv') {
-          pageUrl = `https://animotvslash.org/${baseSlug}-episode-${episodeNum}/`;
+    // Check manual mapping
+    if (VIDEO_MAP[episodeKey]) {
+      console.log(`[animotvslash] Using manual mapping for ${episodeKey}`);
+      return [{
+        name: `ANIMOTVSLASH - Manual`,
+        title: `S${seasonNum}E${episodeNum}`,
+        url: VIDEO_MAP[episodeKey],
+        quality: 'Auto',
+        headers: VIDEO_HEADERS,
+        provider: 'animotvslash'
+      }];
+    }
+
+    // Build page URL
+    let pageUrl;
+    if (mediaType === 'tv') {
+      pageUrl = `https://animotvslash.org/${baseSlug}-episode-${episodeNum}/`;
+    } else {
+      pageUrl = `https://animotvslash.org/${baseSlug}/`;
+    }
+    console.log(`[animotvslash] Fetching page: ${pageUrl}`);
+
+    const html = await fetchHTML(pageUrl);
+    if (!html) {
+      console.log('[animotvslash] Failed to fetch page');
+      return [];
+    }
+
+    // Extract player URLs from HTML
+    let playerUrls = getAllPlayerUrls(html, pageUrl);
+    console.log(`[animotvslash] Found ${playerUrls.length} URLs from HTML:`, playerUrls);
+
+    // If none found, try Dooplayer API
+    if (playerUrls.length === 0) {
+      const postId = await getPostId(html, baseSlug);
+      if (postId) {
+        console.log(`[animotvslash] Post ID: ${postId}, trying Dooplayer API`);
+        const apiUrl = await fetchDooplayerUrl(postId, mediaType, episodeNum);
+        if (apiUrl) {
+          console.log(`[animotvslash] Dooplayer API returned: ${apiUrl}`);
+          playerUrls.push(apiUrl);
         } else {
-          pageUrl = `https://animotvslash.org/${baseSlug}/`;
+          console.log('[animotvslash] Dooplayer API returned nothing');
         }
-        console.log(`[animotvslash] constructed URL: ${pageUrl}`);
-        return fetch(pageUrl, { headers: HEADERS })
-          .then(res => {
-            console.log(`[animotvslash] HTTP response: ${res.status}`);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            return res.text();
-          })
-          .then(html => {
-            const playerUrls = getAllPlayerUrls(html, pageUrl);
-            const postId = getPostId(html);
-            console.log(`[animotvslash] found ${playerUrls.length} player URLs:`, playerUrls);
-            console.log(`[animotvslash] post ID: ${postId || 'not found'}`);
-            const streams = [];
-            const seen = new Set();
+      }
+    }
 
-            function addStreamFromPlayerUrl(pUrl, serverHint) {
-              const videoUrl = decodeJwPlayerUrl(pUrl);
-              if (videoUrl) {
-                console.log(`[animotvslash] decoded video URL: ${videoUrl}`);
-                if (!seen.has(videoUrl)) {
-                  seen.add(videoUrl);
-                  let serverName = serverHint;
-                  if (!serverName) {
-                    if (pUrl.toLowerCase().includes('hard')) serverName = 'HARDSUB';
-                    else if (pUrl.toLowerCase().includes('soft')) serverName = 'SOFTSUB';
-                    else serverName = `Server${streams.length + 1}`;
-                  }
-                  streams.push({
-                    name: `ANIMOTVSLASH - ${serverName} (HD)`,
-                    title: mediaType === 'tv' ? `S${seasonNum}E${episodeNum}` : 'Movie',
-                    url: videoUrl,
-                    quality: 'HD',
-                    size: 'Unknown',
-                    headers: VIDEO_HEADERS,
-                    subtitles: [],
-                    provider: 'animotvslash'
-                  });
-                }
-              } else {
-                console.log(`[animotvslash] failed to decode player URL: ${pUrl}`);
-              }
-            }
-
-            for (let pUrl of playerUrls) {
-              addStreamFromPlayerUrl(pUrl, null);
-            }
-
-            if (streams.length < 2 && postId) {
-              console.log('[animotvslash] only one stream, trying AJAX fallback');
-              return fetchAdditionalPlayerUrl(postId).then(extraPlayerUrl => {
-                if (extraPlayerUrl) {
-                  console.log(`[animotvslash] AJAX fallback returned player URL: ${extraPlayerUrl}`);
-                  addStreamFromPlayerUrl(extraPlayerUrl, 'SOFTSUB');
-                } else {
-                  console.log('[animotvslash] AJAX fallback returned nothing');
-                }
-                return streams;
-              });
-            }
-            return streams;
-          })
-          .then(streams => {
-            console.log(`[animotvslash] returning ${streams.length} stream(s)`);
-            resolve(streams);
-          });
-      })
-      .catch(err => {
-        console.error('[animotvslash] error:', err.message);
-        resolve([]);
+    // Process all discovered URLs
+    const streams = [];
+    const seen = new Set();
+    for (let url of playerUrls) {
+      if (seen.has(url)) continue;
+      seen.add(url);
+      // Decode JW Player URLs
+      const videoUrl = decodeJwPlayerUrl(url);
+      streams.push({
+        name: `ANIMOTVSLASH - Stream ${streams.length + 1}`,
+        title: mediaType === 'tv' ? `S${seasonNum}E${episodeNum}` : 'Movie',
+        url: videoUrl,
+        quality: 'Auto',
+        headers: VIDEO_HEADERS,
+        provider: 'animotvslash'
       });
-  });
+    }
+
+    console.log(`[animotvslash] Returning ${streams.length} stream(s)`);
+    return streams;
+  } catch (err) {
+    console.error('[animotvslash] error:', err.message);
+    return [];
+  }
 }
 
 module.exports = { getStreams };
