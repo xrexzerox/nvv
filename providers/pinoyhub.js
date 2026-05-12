@@ -14,7 +14,7 @@ const HEADERS = {
   'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
   'Accept-Language': 'en-US,en;q=0.9',
   'Referer': BASE_URL,
-  'Cookie': 'starstruck_7da72d90b632af60dd1158c068193d61=99f22538d0588cdd7ccfc783299f88a7' // update if expired
+  'Cookie': 'starstruck_7da72d90b632af60dd1158c068193d61=99f22538d0588cdd7ccfc783299f88a7'
 };
 
 const VIDEO_HEADERS = {
@@ -54,61 +54,6 @@ async function resolveInternalLink(linkUrl) {
     }
   } catch (err) {}
   return null;
-}
-
-async function resolveExternalHost(externalUrl) {
-  if (!externalUrl) return null;
-  if (!externalUrl.startsWith('http')) externalUrl = 'https://' + externalUrl;
-  console.log(`[pinoyhub] Resolving external host: ${externalUrl}`);
-
-  // Already direct video
-  if (/\.(m3u8|mp4)(\?|$)/i.test(externalUrl)) return externalUrl;
-
-  // --- MixDrop / m1xdrop.click ---
-  if (externalUrl.includes('mixdrop') || externalUrl.includes('m1xdrop')) {
-    const html = await fetchHTML(externalUrl);
-    if (html) {
-      // Extract the mxcontent.net MP4 URL (same as Python regex)
-      let match = html.match(/https?:\/\/[^\s"']+\.mxcontent\.net\/[^\s"']+\.mp4[^\s"']*/i);
-      if (!match) {
-        // Look for "file":"https://..."
-        match = html.match(/file:\s*['"]([^'"]+\.mp4[^'"]*)['"]/);
-      }
-      if (match) {
-        const directUrl = match[0] || match[1];
-        console.log(`[pinoyhub] Extracted MixDrop direct MP4: ${directUrl}`);
-        return directUrl;
-      }
-    }
-    console.log(`[pinoyhub] Could not extract MixDrop URL, returning embed as fallback`);
-    return externalUrl; // fallback
-  }
-
-  // --- Byse (bysesayeveum.com) ---
-  if (externalUrl.includes('bysesayeveum.com')) {
-    const html = await fetchHTML(externalUrl);
-    if (html) {
-      // Look for the master .m3u8 playlist (from HAR)
-      let match = html.match(/(https?:\/\/[^\s"']+\.r66nv9ed\.com\/hls2\/[^\s"']+\.m3u8[^\s"']*)/i);
-      if (!match) {
-        // fallback to any .m3u8
-        match = html.match(/(https?:\/\/[^\s"']+\.m3u8[^\s"']*)/i);
-      }
-      if (match) {
-        const hlsUrl = match[1];
-        console.log(`[pinoyhub] Extracted Byse HLS playlist: ${hlsUrl}`);
-        return hlsUrl;
-      }
-    }
-    console.log(`[pinoyhub] Could not extract Byse HLS, returning original URL`);
-    return externalUrl;
-  }
-
-  // Generic fallback for any other host (rare)
-  const html = await fetchHTML(externalUrl);
-  if (!html) return externalUrl;
-  const match = html.match(/(https?:\/\/[^\s"']+\.m3u8[^\s"']*)/i);
-  return match ? match[1] : externalUrl;
 }
 
 function extractDownloadLinks(html, title, season, episode) {
@@ -153,6 +98,9 @@ async function getSeriesSlug(tmdbId) {
   return slugify(title);
 }
 
+// ------------------------------------------------------------------
+// Main stream provider (returns original embed URLs)
+// ------------------------------------------------------------------
 async function getStreams(tmdbId, mediaType, season, episode) {
   console.log(`[pinoyhub] Request: ${mediaType} ID:${tmdbId} S${season}E${episode}`);
   try {
@@ -181,18 +129,16 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       console.log(`[pinoyhub] Processing ${link.quality} / ${link.language}: ${link.url}`);
       const external = await resolveInternalLink(link.url);
       if (!external) continue;
-      const direct = await resolveExternalHost(external);
-      if (direct) {
-        streams.push({
-          name: `PinoyHub - ${link.quality} ${link.language}`,
-          title: contextTitle,
-          url: direct,
-          quality: link.quality,
-          headers: VIDEO_HEADERS,
-          provider: 'pinoyhub',
-          behaviorHints: { notWebReady: direct.includes('/f/') ? true : false }
-        });
-      }
+      // Return the external URL as is (embed page) – Stremio will open in external browser
+      streams.push({
+        name: `PinoyHub - ${link.quality} ${link.language}`,
+        title: contextTitle,
+        url: external,
+        quality: link.quality,
+        headers: VIDEO_HEADERS,
+        provider: 'pinoyhub',
+        behaviorHints: { notWebReady: true }
+      });
     }
     console.log(`[pinoyhub] Returning ${streams.length} stream(s)`);
     return streams;
@@ -202,4 +148,47 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   }
 }
 
-module.exports = { getStreams };
+// ------------------------------------------------------------------
+// Catalog functions (movies, series, genres)
+// ------------------------------------------------------------------
+async function getCatalog(type, page = 1, genre = null) {
+  const isMovie = type === 'movie';
+  const basePath = isMovie ? '/movies' : '/series';
+  let url;
+  if (genre) {
+    const genreSlugMap = {
+      'Action': 'action',
+      'Drama': 'drama',
+      'Comedy': 'comedy',
+      'Horror': 'horror',
+      'Romance': 'romance',
+      'Thriller': 'thriller'
+    };
+    const slug = genreSlugMap[genre] || genre.toLowerCase();
+    url = `${BASE_URL}/genre/${slug}/page/${page}/`;
+  } else {
+    url = `${BASE_URL}${basePath}/page/${page}/`;
+  }
+  const html = await fetchHTML(url);
+  if (!html) return [];
+  const $ = cheerio.load(html);
+  const items = [];
+  $('article.item').each((i, el) => {
+    const link = $(el).find('a').first();
+    const href = link.attr('href');
+    const slug = href ? href.split('/').slice(-2, -1)[0] : null;
+    const title = link.find('h3').text().trim();
+    const poster = $(el).find('img').attr('src');
+    if (slug && title) {
+      items.push({
+        id: slug,
+        name: title,
+        poster: poster || null,
+        releaseDate: null
+      });
+    }
+  });
+  return items;
+}
+
+module.exports = { getStreams, getCatalog };
