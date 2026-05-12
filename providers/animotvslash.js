@@ -14,7 +14,7 @@ const TMDB_API_KEY = '6dc830f9624b43261325bed3bf7d0dfa';
 // Value: direct video URL (mp4/m3u8) or embed URL (will open in external browser)
 // ------------------------------------------------------------------
 const VIDEO_MAP = {
-  // Example: "wistoria-wand-and-sword-episode-1": "https://example.com/video.mp4",
+  // Example: "wistoria-wand-and-sword-season-2-episode-1": "https://example.com/video.mp4",
 };
 
 // ------------------------------------------------------------------
@@ -69,6 +69,9 @@ async function fetchJSON(url) {
   }
 }
 
+// ------------------------------------------------------------------
+// Fetch title from TMDB
+// ------------------------------------------------------------------
 async function fetchTitleFromTMDB(tmdbId, mediaType) {
   const url = mediaType === 'tv'
     ? `https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_API_KEY}`
@@ -187,7 +190,7 @@ function decodeJwPlayerUrl(url) {
 // Main exported function
 // ------------------------------------------------------------------
 async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
-  console.log(`[animotvslash] === START for ${mediaType} ID:${tmdbId} S${seasonNum}E${episodeNum} ===`);
+  console.log(`[animotvslash] === START for ${mediaType} TMDB ID:${tmdbId} S${seasonNum}E${episodeNum} ===`);
 
   try {
     const title = await fetchTitleFromTMDB(tmdbId, mediaType);
@@ -202,8 +205,10 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
       baseSlug = SLUG_OVERRIDES[tmdbId];
       console.log(`[animotvslash] using override slug: ${baseSlug}`);
     }
+    
+    // ----- FIX: Use "season-X" pattern for seasons > 1 -----
     if (mediaType === 'tv' && seasonNum > 1) {
-      baseSlug = `${baseSlug}-${seasonNum}`;
+      baseSlug = `${baseSlug}-season-${seasonNum}`;
     }
     const episodeKey = `${baseSlug}-episode-${episodeNum}`;
 
