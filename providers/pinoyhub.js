@@ -45,6 +45,7 @@ async function fetchJSON(url) {
 
 async function resolveInternalLink(linkUrl) {
   console.log(`[pinoyhub] Following internal link: ${linkUrl}`);
+  // Try direct redirect first
   try {
     const res = await fetch(linkUrl, { headers: HEADERS, redirect: 'follow' });
     const finalUrl = res.url;
@@ -59,6 +60,7 @@ async function resolveInternalLink(linkUrl) {
   const $ = cheerio.load(html);
   const currentDomain = new URL(linkUrl).hostname;
 
+  // Look for iframe (MixDrop)
   const iframe = $('.download-top iframe, iframe[src*="/e/"]').first();
   if (iframe.length && iframe.attr('src')) {
     let src = iframe.attr('src');
@@ -66,6 +68,7 @@ async function resolveInternalLink(linkUrl) {
     return src;
   }
 
+  // Look for video URL inside scripts (Byse)
   let videoUrl = null;
   $('script').each((i, el) => {
     const scriptContent = $(el).html();
@@ -89,6 +92,7 @@ async function resolveInternalLink(linkUrl) {
   });
   if (videoUrl) return videoUrl;
 
+  // ?download button
   const downloadBtn = $('a[href="?download"], a.download-btn').first();
   if (downloadBtn.length && downloadBtn.attr('href') === '?download') {
     const fullUrl = linkUrl + '?download';
@@ -100,6 +104,7 @@ async function resolveInternalLink(linkUrl) {
     } catch (err) {}
   }
 
+  // Meta refresh
   const meta = $('meta[http-equiv="refresh"]');
   if (meta.length) {
     const content = meta.attr('content');
@@ -107,6 +112,7 @@ async function resolveInternalLink(linkUrl) {
     if (match) return match[1];
   }
 
+  // Any external link to known hosts
   const knownHosts = ['mixdrop', 'playmogo', 'dood', 'byse', 'bysesayeveum'];
   let external = null;
   $('a[href]').each((i, el) => {
@@ -124,30 +130,32 @@ async function resolveExternalHost(externalUrl) {
   if (!externalUrl.startsWith('http')) externalUrl = 'https://' + externalUrl;
   console.log(`[pinoyhub] Resolving external host: ${externalUrl}`);
 
-  // Already direct video file or known download link
+  // Already direct video or known download path
   if (/\.(m3u8|mp4)(\?|$)/i.test(externalUrl)) return externalUrl;
   if (externalUrl.includes('/d/') || externalUrl.includes('/dl/')) return externalUrl;
 
+  // Special handling for MixDrop: construct direct /dl/ URL
+  if (externalUrl.includes('/e/')) {
+    const dlUrl = externalUrl.replace('/e/', '/dl/') + '/video.mp4';
+    // Accept without verification – known pattern from Python debug
+    return dlUrl;
+  }
+
   const html = await fetchHTML(externalUrl);
-  if (!html) return null;
+  if (!html) return externalUrl; // fallback
 
   const $ = cheerio.load(html);
   const currentDomain = new URL(externalUrl).hostname;
 
-  // Follow any iframe that points to a video (avoid self-loop)
-  const iframe = $('iframe[src]').filter((i, el) => {
-    let src = $(el).attr('src');
-    return src && (src.includes('/e/') || src.includes('/dl/'));
-  }).first();
+  // Follow iframe deeper
+  const iframe = $('iframe[src*="/e/"], iframe[src*="/dl/"]').first();
   if (iframe.length && iframe.attr('src')) {
     let src = iframe.attr('src');
     if (src.startsWith('/')) src = `https://${currentDomain}${src}`;
-    if (src !== externalUrl) {
-      return resolveExternalHost(src);
-    }
+    return resolveExternalHost(src);
   }
 
-  // Try to extract direct video URL from scripts
+  // Extract from scripts
   const htmlStr = html;
   let match = htmlStr.match(/file:\s*["']([^"']+\.(?:mp4|m3u8)[^"']*)["']/);
   if (match) return match[1];
@@ -158,28 +166,15 @@ async function resolveExternalHost(externalUrl) {
   match = htmlStr.match(/(https?:\/\/[^\s"']+\.(?:mp4|m3u8)[^\s"']*)/i);
   if (match) return match[1];
 
-  // For MixDrop, construct the direct video URL: replace /e/ with /dl/ and append /video.mp4
-  if (externalUrl.includes('/e/')) {
-    const dlUrl = externalUrl.replace('/e/', '/dl/') + '/video.mp4';
-    try {
-      const head = await fetch(dlUrl, { method: 'HEAD', headers: VIDEO_HEADERS });
-      if (head.ok && head.headers.get('content-type')?.includes('video')) {
-        return dlUrl;
-      }
-    } catch (e) {}
-  }
-
-  // Token/expiry pattern (Doodstream)
+  // Token/expiry (Doodstream)
   const tokenMatch = htmlStr.match(/token\s*[:=]\s*["']([^"']+)["']/);
   const expiryMatch = htmlStr.match(/expiry\s*[:=]\s*["']([^"']+)["']/);
   if (tokenMatch && expiryMatch) {
     const videoId = externalUrl.split('/').pop();
     const domain = externalUrl.split('/')[2];
-    const direct = `https://${domain}/dl/${videoId}?token=${tokenMatch[1]}&expiry=${expiryMatch[1]}`;
-    return direct;
+    return `https://${domain}/dl/${videoId}?token=${tokenMatch[1]}&expiry=${expiryMatch[1]}`;
   }
 
-  // Fallback: return the original URL (might be embed)
   return externalUrl;
 }
 
@@ -254,8 +249,8 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       const external = await resolveInternalLink(link.url);
       if (!external) continue;
       const direct = await resolveExternalHost(external);
-      // Accept URL if it's a direct video file or a known download path
-      if (direct && !direct.includes('pinoymovieshub.win') && 
+      // Accept if it's a direct video path or the constructed MixDrop URL
+      if (direct && !direct.includes('pinoymovieshub.win') &&
           (direct.includes('/dl/') || direct.includes('/d/') || /\.(mp4|m3u8)$/i.test(direct))) {
         streams.push({
           name: `PinoyHub - ${link.quality} ${link.language}`,
