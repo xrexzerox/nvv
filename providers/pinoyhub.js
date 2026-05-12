@@ -17,14 +17,13 @@ const HEADERS = {
   'Cookie': 'starstruck_7da72d90b632af60dd1158c068193d61=99f22538d0588cdd7ccfc783299f88a7'
 };
 
+// Headers used for video streams – matches animotvslash format
 const VIDEO_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-  'Referer': BASE_URL
+  'Referer': BASE_URL,
+  'Accept': 'video/webm,video/ogg,video/*;q=0.9,*/*;q=0.5'
 };
 
-// ------------------------------------------------------------------
-// Helper: fetch HTML
-// ------------------------------------------------------------------
 async function fetchHTML(url) {
   try {
     const res = await fetch(url, { headers: HEADERS, redirect: 'follow' });
@@ -46,9 +45,6 @@ async function fetchJSON(url) {
   }
 }
 
-// ------------------------------------------------------------------
-// Follow internal /links/... redirect -> external host URL
-// ------------------------------------------------------------------
 async function resolveInternalLink(linkUrl) {
   console.log(`[pinoyhub] Following internal link: ${linkUrl}`);
   try {
@@ -62,9 +58,6 @@ async function resolveInternalLink(linkUrl) {
   return null;
 }
 
-// ------------------------------------------------------------------
-// Extract the download table from the episode/movie page
-// ------------------------------------------------------------------
 function extractDownloadLinks(html, title, season, episode) {
   const $ = cheerio.load(html);
   const table = $('#download .links_table table');
@@ -84,9 +77,6 @@ function extractDownloadLinks(html, title, season, episode) {
   return links;
 }
 
-// ------------------------------------------------------------------
-// TMDB helpers
-// ------------------------------------------------------------------
 async function fetchTitleFromTMDB(tmdbId, mediaType) {
   const url = mediaType === 'tv'
     ? `https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_API_KEY}`
@@ -110,58 +100,47 @@ async function getSeriesSlug(tmdbId) {
   return slugify(title);
 }
 
-// ------------------------------------------------------------------
-// Main exported function – returns streams in the same format as animotvslash
-// ------------------------------------------------------------------
 async function getStreams(tmdbId, mediaType, season, episode) {
   console.log(`[pinoyhub] Request: ${mediaType} ID:${tmdbId} S${season}E${episode}`);
 
   try {
-    // 1. Build page URL
-    let pageUrl, contextTitle;
+    let pageUrl, contextTitle, displayTitle;
     if (mediaType === 'movie') {
       const movieTitle = await fetchTitleFromTMDB(tmdbId, 'movie');
       if (!movieTitle) throw new Error('Cannot fetch movie title');
       contextTitle = movieTitle;
+      displayTitle = 'Movie';
       const movieSlug = slugify(movieTitle);
       pageUrl = `${BASE_URL}/movies/${movieSlug}/`;
     } else {
       const seriesSlug = await getSeriesSlug(tmdbId);
       contextTitle = `${seriesSlug} S${season}E${episode}`;
+      displayTitle = `S${season}E${episode}`;
       pageUrl = `${BASE_URL}/episodes/${seriesSlug}-${season}x${episode}/`;
     }
     console.log(`[pinoyhub] Fetching page: ${pageUrl}`);
     const html = await fetchHTML(pageUrl);
     if (!html) return [];
 
-    // 2. Extract download links from table
     const links = extractDownloadLinks(html, contextTitle, season, episode);
     if (links.length === 0) return [];
 
-    // 3. Process each link → final external URL
     const streams = [];
-    for (const link of links) {
-      // skip subtitle-only links
+    for (let i = 0; i < links.length; i++) {
+      const link = links[i];
       if (link.quality.toLowerCase() === 'subtitle' || link.language.toLowerCase() === 'english') continue;
 
       console.log(`[pinoyhub] Processing ${link.quality} / ${link.language}: ${link.url}`);
       const external = await resolveInternalLink(link.url);
       if (!external) continue;
 
-      // Use the external URL as the stream (embed page or direct video)
-      let streamUrl = external;
-      let quality = link.quality;
-
-      // Optional: if the external URL contains a known pattern, you could try to extract a direct video here,
-      // but returning the embed page is the simplest working solution.
       streams.push({
-        name: `PinoyHub - ${quality} ${link.language}`,
-        title: contextTitle,
-        url: streamUrl,
-        quality: quality,
+        name: `PinoyHub - Stream ${streams.length + 1}`,
+        title: displayTitle,
+        url: external,
+        quality: 'Auto',
         headers: VIDEO_HEADERS,
-        provider: 'pinoyhub',
-        behaviorHints: { notWebReady: true }   // open in external browser if not a direct video file
+        provider: 'pinoyhub'
       });
     }
 
