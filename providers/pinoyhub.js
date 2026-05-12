@@ -14,16 +14,18 @@ const HEADERS = {
   'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
   'Accept-Language': 'en-US,en;q=0.9',
   'Referer': BASE_URL,
-  'Cookie': 'starstruck_7da72d90b632af60dd1158c068193d61=99f22538d0588cdd7ccfc783299f88a7'
+  'Cookie': 'starstruck_7da72d90b632af60dd1158c068193d61=99f22538d0588cdd7ccfc783299f88a7' // update if expired
 };
 
-// Headers used for video streams – matches animotvslash format
 const VIDEO_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
   'Referer': BASE_URL,
   'Accept': 'video/webm,video/ogg,video/*;q=0.9,*/*;q=0.5'
 };
 
+// ------------------------------------------------------------------
+// Helper: fetch HTML with redirects
+// ------------------------------------------------------------------
 async function fetchHTML(url) {
   try {
     const res = await fetch(url, { headers: HEADERS, redirect: 'follow' });
@@ -45,6 +47,9 @@ async function fetchJSON(url) {
   }
 }
 
+// ------------------------------------------------------------------
+// Follow internal /links/... redirect to the final external URL
+// ------------------------------------------------------------------
 async function resolveInternalLink(linkUrl) {
   console.log(`[pinoyhub] Following internal link: ${linkUrl}`);
   try {
@@ -58,7 +63,10 @@ async function resolveInternalLink(linkUrl) {
   return null;
 }
 
-function extractDownloadLinks(html, title, season, episode) {
+// ------------------------------------------------------------------
+// Extract the download links table from the page
+// ------------------------------------------------------------------
+function extractDownloadLinks(html) {
   const $ = cheerio.load(html);
   const table = $('#download .links_table table');
   if (!table.length) return [];
@@ -77,6 +85,9 @@ function extractDownloadLinks(html, title, season, episode) {
   return links;
 }
 
+// ------------------------------------------------------------------
+// TMDB helpers
+// ------------------------------------------------------------------
 async function fetchTitleFromTMDB(tmdbId, mediaType) {
   const url = mediaType === 'tv'
     ? `https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_API_KEY}`
@@ -100,47 +111,58 @@ async function getSeriesSlug(tmdbId) {
   return slugify(title);
 }
 
+// ------------------------------------------------------------------
+// Main exported function
+// ------------------------------------------------------------------
 async function getStreams(tmdbId, mediaType, season, episode) {
-  console.log(`[pinoyhub] Request: ${mediaType} ID:${tmdbId} S${season}E${episode}`);
+  console.log(`[pinoyhub] === START for ${mediaType} TMDB ID:${tmdbId} S${season}E${episode} ===`);
 
   try {
-    let pageUrl, contextTitle, displayTitle;
+    let pageUrl, displayTitle;
+
     if (mediaType === 'movie') {
       const movieTitle = await fetchTitleFromTMDB(tmdbId, 'movie');
-      if (!movieTitle) throw new Error('Cannot fetch movie title');
-      contextTitle = movieTitle;
+      if (!movieTitle) {
+        console.log('[pinoyhub] TMDB title not found');
+        return [];
+      }
+      console.log(`[pinoyhub] TMDB title: "${movieTitle}"`);
       displayTitle = 'Movie';
       const movieSlug = slugify(movieTitle);
       pageUrl = `${BASE_URL}/movies/${movieSlug}/`;
     } else {
       const seriesSlug = await getSeriesSlug(tmdbId);
-      contextTitle = `${seriesSlug} S${season}E${episode}`;
+      const originalTitle = await fetchTitleFromTMDB(tmdbId, 'tv');
+      console.log(`[pinoyhub] TMDB title: "${originalTitle}"`);
       displayTitle = `S${season}E${episode}`;
       pageUrl = `${BASE_URL}/episodes/${seriesSlug}-${season}x${episode}/`;
     }
+
     console.log(`[pinoyhub] Fetching page: ${pageUrl}`);
     const html = await fetchHTML(pageUrl);
     if (!html) return [];
 
-    const links = extractDownloadLinks(html, contextTitle, season, episode);
+    const links = extractDownloadLinks(html);
     if (links.length === 0) return [];
 
     const streams = [];
     for (let i = 0; i < links.length; i++) {
       const link = links[i];
+      // Skip subtitle-only links
       if (link.quality.toLowerCase() === 'subtitle' || link.language.toLowerCase() === 'english') continue;
 
       console.log(`[pinoyhub] Processing ${link.quality} / ${link.language}: ${link.url}`);
-      const external = await resolveInternalLink(link.url);
-      if (!external) continue;
+      const externalUrl = await resolveInternalLink(link.url);
+      if (!externalUrl) continue;
 
       streams.push({
         name: `PinoyHub - Stream ${streams.length + 1}`,
         title: displayTitle,
-        url: external,
+        url: externalUrl,
         quality: 'Auto',
         headers: VIDEO_HEADERS,
-        provider: 'pinoyhub'
+        provider: 'pinoyhub',
+        behaviorHints: { notWebReady: true }
       });
     }
 
