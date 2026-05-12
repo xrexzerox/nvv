@@ -22,6 +22,9 @@ const VIDEO_HEADERS = {
   'Referer': BASE_URL
 };
 
+// ------------------------------------------------------------------
+// Helper: fetch HTML
+// ------------------------------------------------------------------
 async function fetchHTML(url) {
   try {
     const res = await fetch(url, { headers: HEADERS, redirect: 'follow' });
@@ -43,6 +46,9 @@ async function fetchJSON(url) {
   }
 }
 
+// ------------------------------------------------------------------
+// Follow internal /links/... redirect -> external host URL
+// ------------------------------------------------------------------
 async function resolveInternalLink(linkUrl) {
   console.log(`[pinoyhub] Following internal link: ${linkUrl}`);
   try {
@@ -56,6 +62,9 @@ async function resolveInternalLink(linkUrl) {
   return null;
 }
 
+// ------------------------------------------------------------------
+// Extract the download table from the episode/movie page
+// ------------------------------------------------------------------
 function extractDownloadLinks(html, title, season, episode) {
   const $ = cheerio.load(html);
   const table = $('#download .links_table table');
@@ -75,6 +84,9 @@ function extractDownloadLinks(html, title, season, episode) {
   return links;
 }
 
+// ------------------------------------------------------------------
+// TMDB helpers
+// ------------------------------------------------------------------
 async function fetchTitleFromTMDB(tmdbId, mediaType) {
   const url = mediaType === 'tv'
     ? `https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_API_KEY}`
@@ -99,11 +111,13 @@ async function getSeriesSlug(tmdbId) {
 }
 
 // ------------------------------------------------------------------
-// Main stream provider (returns original embed URLs)
+// Main exported function – returns streams in the same format as animotvslash
 // ------------------------------------------------------------------
 async function getStreams(tmdbId, mediaType, season, episode) {
   console.log(`[pinoyhub] Request: ${mediaType} ID:${tmdbId} S${season}E${episode}`);
+
   try {
+    // 1. Build page URL
     let pageUrl, contextTitle;
     if (mediaType === 'movie') {
       const movieTitle = await fetchTitleFromTMDB(tmdbId, 'movie');
@@ -120,75 +134,43 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     const html = await fetchHTML(pageUrl);
     if (!html) return [];
 
+    // 2. Extract download links from table
     const links = extractDownloadLinks(html, contextTitle, season, episode);
     if (links.length === 0) return [];
 
+    // 3. Process each link → final external URL
     const streams = [];
     for (const link of links) {
+      // skip subtitle-only links
       if (link.quality.toLowerCase() === 'subtitle' || link.language.toLowerCase() === 'english') continue;
+
       console.log(`[pinoyhub] Processing ${link.quality} / ${link.language}: ${link.url}`);
       const external = await resolveInternalLink(link.url);
       if (!external) continue;
-      // Return the external URL as is (embed page) – Stremio will open in external browser
+
+      // Use the external URL as the stream (embed page or direct video)
+      let streamUrl = external;
+      let quality = link.quality;
+
+      // Optional: if the external URL contains a known pattern, you could try to extract a direct video here,
+      // but returning the embed page is the simplest working solution.
       streams.push({
-        name: `PinoyHub - ${link.quality} ${link.language}`,
+        name: `PinoyHub - ${quality} ${link.language}`,
         title: contextTitle,
-        url: external,
-        quality: link.quality,
+        url: streamUrl,
+        quality: quality,
         headers: VIDEO_HEADERS,
         provider: 'pinoyhub',
-        behaviorHints: { notWebReady: true }
+        behaviorHints: { notWebReady: true }   // open in external browser if not a direct video file
       });
     }
+
     console.log(`[pinoyhub] Returning ${streams.length} stream(s)`);
     return streams;
   } catch (err) {
-    console.error('[pinoyhub] Error:', err.message);
+    console.error('[pinoyhub] error:', err.message);
     return [];
   }
 }
 
-// ------------------------------------------------------------------
-// Catalog functions (movies, series, genres)
-// ------------------------------------------------------------------
-async function getCatalog(type, page = 1, genre = null) {
-  const isMovie = type === 'movie';
-  const basePath = isMovie ? '/movies' : '/series';
-  let url;
-  if (genre) {
-    const genreSlugMap = {
-      'Action': 'action',
-      'Drama': 'drama',
-      'Comedy': 'comedy',
-      'Horror': 'horror',
-      'Romance': 'romance',
-      'Thriller': 'thriller'
-    };
-    const slug = genreSlugMap[genre] || genre.toLowerCase();
-    url = `${BASE_URL}/genre/${slug}/page/${page}/`;
-  } else {
-    url = `${BASE_URL}${basePath}/page/${page}/`;
-  }
-  const html = await fetchHTML(url);
-  if (!html) return [];
-  const $ = cheerio.load(html);
-  const items = [];
-  $('article.item').each((i, el) => {
-    const link = $(el).find('a').first();
-    const href = link.attr('href');
-    const slug = href ? href.split('/').slice(-2, -1)[0] : null;
-    const title = link.find('h3').text().trim();
-    const poster = $(el).find('img').attr('src');
-    if (slug && title) {
-      items.push({
-        id: slug,
-        name: title,
-        poster: poster || null,
-        releaseDate: null
-      });
-    }
-  });
-  return items;
-}
-
-module.exports = { getStreams, getCatalog };
+module.exports = { getStreams };
