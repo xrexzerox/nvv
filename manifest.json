@@ -42,43 +42,43 @@
       "contentLanguage": ["en", "ja"]
     },
     {
-  "id": "4khdhub",
-  "name": "4KHDHub",
-  "description": "4K/1080p/720p Movies & TV from 4KHDHub",
-  "version": "3.0.0",
-  "author": "Enhanced",
-  "supportedTypes": ["movie", "tv"],
-  "filename": "providers/4khdhub.js",
-  "enabled": true,
-  "formats": ["mp4", "mkv", "m3u8"],
-  "logo": "https://i.postimg.cc/DZpW6Xfb/4khdhub.png",
-  "contentLanguage": ["en", "hi", "ta", "te", "ml", "kn", "bn", "pa", "es", "fr", "de", "it", "ko", "ja", "zh", "tr", "pt", "ar"]
-},
-{
-  "id": "pinoymovieshub",
-  "name": "PinoyMoviesHub",
-  "description": "Filipino movies & series from PinoyMoviesHub",
-  "version": "4.0.0",
-  "author": "Enhanced",
-  "supportedTypes": ["movie", "tv"],
-  "filename": "providers/pinoymovieshub.js",
-  "enabled": true,
-  "formats": ["mp4", "m3u8", "webm"],
-  "logo": "https://www.google.com/s2/favicons?domain=pinoymovieshub.win&sz=128",
-  "contentLanguage": ["tl", "fil", "en"]
-},
-{
-  "id": "kisskh",
-  "name": "KissKH",
-  "description": "Korean dramas and Asian TV shows from KissKH.ovh",
-  "version": "1.0.0",
-  "author": "Enhanced",
-  "supportedTypes": ["movie", "tv"],
-  "filename": "providers/kisskh.js",
-  "enabled": true,
-  "formats": ["m3u8", "mp4"],
-  "logo": "https://www.google.com/s2/favicons?domain=kisskh.ovh&sz=128",
-  "contentLanguage": ["en", "ko", "ja", "zh"]
-}
+      "id": "4khdhub",
+      "name": "4KHDHub",
+      "description": "4K/1080p/720p Movies & TV from 4KHDHub",
+      "version": "3.0.0",
+      "author": "Enhanced",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/4khdhub.js",
+      "enabled": true,
+      "formats": ["mp4", "mkv", "m3u8"],
+      "logo": "https://i.postimg.cc/DZpW6Xfb/4khdhub.png",
+      "contentLanguage": ["en", "hi", "ta", "te", "ml", "kn", "bn", "pa", "es", "fr", "de", "it", "ko", "ja", "zh", "tr", "pt", "ar"]
+    },
+    {
+      "id": "pinoymovieshub",
+      "name": "PinoyMoviesHub",
+      "description": "Filipino movies & series from PinoyMoviesHub",
+      "version": "4.0.0",
+      "author": "Enhanced",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/pinoymovieshub.js",
+      "enabled": true,
+      "formats": ["mp4", "m3u8", "webm"],
+      "logo": "https://www.google.com/s2/favicons?domain=pinoymovieshub.win&sz=128",
+      "contentLanguage": ["tl", "fil", "en"]
+    },
+    {
+      "id": "kisskh",
+      "name": "KissKH",
+      "description": "Korean dramas and Asian TV shows from KissKH.ovh",
+      "version": "1.0.0",
+      "author": "Enhanced",
+      "supportedTypes": ["movie", "tv"],
+      "filename": "providers/kisskh.js",
+      "enabled": true,
+      "formats": ["m3u8", "mp4"],
+      "logo": "https://www.google.com/s2/favicons?domain=kisskh.ovh&sz=128",
+      "contentLanguage": ["en", "ko", "ja", "zh"]
+    }
   ]
 }
