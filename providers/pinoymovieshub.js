@@ -221,8 +221,10 @@ function buildStream(name, url, quality, language, displayTitle, meta) {
   var lang = inferLang(language);
   var q = parseQuality(quality + " " + language);
   var isSeries = !!(meta && meta.season);
+  var host = "";
+  try { host = new URL(url).hostname.replace(/^www\./, "").replace(/\.com$/, ""); } catch(e) {}
 
-  var line1, line2;
+  var line1, line2, line3;
   if (isSeries) {
     var epPart = meta.episodeTitle ? " - " + meta.episodeTitle : "";
     line1 = "📺 S" + meta.season + "E" + meta.episode + epPart + " | " + displayTitle;
@@ -231,17 +233,19 @@ function buildStream(name, url, quality, language, displayTitle, meta) {
   }
 
   var qIcon = (q.indexOf("2160") !== -1 || q.indexOf("4K") !== -1) ? "💎" : "📺";
-  line2 = qIcon + " " + q + " | 🌍 " + lang;
+  line2 = qIcon + " " + q + " | 🌍 " + lang + (host ? " | 📡 " + host : "");
+  line3 = "🌐 Open in Browser (Embed)";
 
   return {
-    name: "PinoyMoviesHub | " + q + " | " + lang,
-    title: line1 + "\n" + line2,
+    name: "PinoyMoviesHub | " + q + " | " + lang + (host ? " | " + host : ""),
+    title: line1 + "\n" + line2 + "\n" + line3,
     url: url,
     quality: q,
     headers: { Referer: BASE_URL },
     provider: "pinoymovieshub",
     behaviorHints: {
-      bingeGroup: "pinoymovieshub-" + q.toLowerCase()
+      bingeGroup: "pinoymovieshub-" + q.toLowerCase(),
+      notWebReady: true
     }
   };
 }
