@@ -72,7 +72,7 @@ function extractVideoUrls(html, baseUrl) {
   if (source) urls.add(source);
 
   // regex for m3u8/mp4 inside scripts or inline JSON
-  const regex = /(https?:\/\/[^\s"']+\.(?:m3u8|mp4)[^\s"']*)/gi;
+  const regex = /(https?:\/\/[^\s"'<>]+?\.(?:m3u8|mp4)(?:\?[^\s"'<>]*)?)/gi;
   const matches = html.match(regex);
   if (matches) {
     matches.forEach(m => urls.add(m));
