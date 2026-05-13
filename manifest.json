@@ -42,17 +42,17 @@
       "contentLanguage": ["en", "ja"]
     },
     {
-      "id": "4khdhubNEW",
-      "name": "4khdhubNEW",
-      "description": "4K movie/TV streams from 4khdhub domains – extracts direct links from HubCloud, HubDrive, HubCDN, 10Gbps, BuzzServer, etc. Supports FSL domains and only English streams.",
-      "version": "1.0.0",
-      "author": "xrexzerox",
-      "supportedTypes": ["movie", "tv"],
-      "filename": "providers/4khdhubnew.js",
-      "enabled": true,
-      "formats": ["m3u8", "mp4"],
-      "logo": "https://www.google.com/s2/favicons?domain=4khdhub.dad&sz=128",
-      "contentLanguage": ["en"]
-    }
+  "id": "4khdhub",
+  "name": "4KHDHub",
+  "description": "4K/1080p/720p Movies & TV from 4KHDHub",
+  "version": "3.0.0",
+  "author": "Enhanced",
+  "supportedTypes": ["movie", "tv"],
+  "filename": "providers/4khdhub.js",
+  "enabled": true,
+  "formats": ["mp4", "mkv", "m3u8"],
+  "logo": "https://i.postimg.cc/DZpW6Xfb/4khdhub.png",
+  "contentLanguage": ["en", "hi", "ta", "te", "ml", "kn", "bn", "pa", "es", "fr", "de", "it", "ko", "ja", "zh", "tr", "pt", "ar"]
+}
   ]
 }
