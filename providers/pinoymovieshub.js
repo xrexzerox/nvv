@@ -219,33 +219,38 @@ function callDooPlayerAPI(playerData) {
 
 function buildStream(name, url, quality, language, displayTitle, meta) {
   var lang = inferLang(language);
-  var q = parseQuality(quality + " " + language);
   var isSeries = !!(meta && meta.season);
   var host = "";
-  try { host = new URL(url).hostname.replace(/^www\./, "").replace(/\.com$/, ""); } catch(e) {}
+  try { host = new URL(url).hostname.replace(/^www\./, "").replace(/\.com$/, "").replace(/\.top$/, "").replace(/\.click$/, ""); } catch(e) {}
 
-  var line1, line2, line3;
+  // Detect if this is an embed URL (not a direct video file)
+  var isEmbed = !/\.(m3u8|mp4|mkv|webm|avi|mov)(\?|#|$)/i.test(url);
+  var q = isEmbed ? "Browser" : parseQuality(quality + " " + language);
+
+  var line1, line2;
   if (isSeries) {
     var epPart = meta.episodeTitle ? " - " + meta.episodeTitle : "";
-    line1 = "📺 S" + meta.season + "E" + meta.episode + epPart + " | " + displayTitle;
+    line1 = "S" + meta.season + "E" + meta.episode + epPart + " | " + displayTitle;
   } else {
-    line1 = "🎬 " + displayTitle;
+    line1 = displayTitle;
   }
 
-  var qIcon = (q.indexOf("2160") !== -1 || q.indexOf("4K") !== -1) ? "💎" : "📺";
-  line2 = qIcon + " " + q + " | 🌍 " + lang + (host ? " | 📡 " + host : "");
-  line3 = "🌐 Open in Browser (Embed)";
+  if (isEmbed) {
+    line2 = "Browser | " + lang + (host ? " | " + host : "");
+  } else {
+    line2 = q + " | " + lang + (host ? " | " + host : "");
+  }
 
   return {
-    name: "PinoyMoviesHub | " + q + " | " + lang + (host ? " | " + host : ""),
-    title: line1 + "\n" + line2 + "\n" + line3,
+    name: "PinoyMoviesHub" + (isEmbed ? " | " + lang + " | (Embed)" : " | " + q + " | " + lang),
+    title: line1 + "\n" + line2,
     url: url,
     quality: q,
     headers: { Referer: BASE_URL },
     provider: "pinoymovieshub",
     behaviorHints: {
-      bingeGroup: "pinoymovieshub-" + q.toLowerCase(),
-      notWebReady: true
+      bingeGroup: "pinoymovieshub-" + (isEmbed ? "embed" : q.toLowerCase()),
+      notWebReady: isEmbed
     }
   };
 }
