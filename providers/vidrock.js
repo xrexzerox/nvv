@@ -43,6 +43,9 @@ async function fetchJSON(url) {
   }
 }
 
+// ------------------------------------------------------------------
+// TMDB helpers
+// ------------------------------------------------------------------
 async function fetchTitleFromTMDB(tmdbId, mediaType) {
   const url = mediaType === 'tv'
     ? `https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_API_KEY}`
@@ -52,24 +55,37 @@ async function fetchTitleFromTMDB(tmdbId, mediaType) {
   return mediaType === 'tv' ? (data.name || data.original_name) : (data.title || data.original_title);
 }
 
+// ------------------------------------------------------------------
+// Attempt to extract video URL from the page's HTML (simple iframe/video)
+// ------------------------------------------------------------------
 function extractVideoUrl(html, baseUrl) {
   const $ = cheerio.load(html);
-  // only simple iframe/video elements; JavaScript‑loaded content will be missed
+  // Look for iframe
   const iframe = $('iframe').first();
   if (iframe.length && iframe.attr('src')) {
     let src = iframe.attr('src');
     if (src.startsWith('/')) src = baseUrl + src;
     return src;
   }
+  // Look for video element
   const video = $('video').first();
-  if (video.length && video.attr('src')) return video.attr('src');
+  if (video.length && video.attr('src')) {
+    return video.attr('src');
+  }
+  // Look for source inside video
   const source = $('video source').first();
-  if (source.length && source.attr('src')) return source.attr('src');
-  const urlMatch = html.match(/(https?:\/\/[^\s"']+\.(?:m3u8|mp4)[^\s"']*)/i);
-  if (urlMatch) return urlMatch[1];
+  if (source.length && source.attr('src')) {
+    return source.attr('src');
+  }
+  // Search for direct .m3u8 or .mp4 in the raw HTML
+  const matches = html.match(/(https?:\/\/[^\s"']+\.(?:m3u8|mp4)[^\s"']*)/i);
+  if (matches) return matches[1];
   return null;
 }
 
+// ------------------------------------------------------------------
+// Main exported function
+// ------------------------------------------------------------------
 async function getStreams(tmdbId, mediaType, season, episode) {
   console.log(`[vidrock] === START for ${mediaType} TMDB ID:${tmdbId} S${season}E${episode} ===`);
 
@@ -78,35 +94,46 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
     if (mediaType === 'movie') {
       const title = await fetchTitleFromTMDB(tmdbId, 'movie');
-      if (!title) return [];
+      if (!title) {
+        console.log('[vidrock] TMDB title not found');
+        return [];
+      }
+      console.log(`[vidrock] TMDB title: "${title}"`);
       displayTitle = title;
       embedUrl = `${BASE_URL}/movie/${tmdbId}`;
     } else {
       const title = await fetchTitleFromTMDB(tmdbId, 'tv');
-      if (!title) return [];
+      if (!title) {
+        console.log('[vidrock] TMDB title not found');
+        return [];
+      }
+      console.log(`[vidrock] TMDB title: "${title}"`);
       displayTitle = `${title} S${season}E${episode}`;
       embedUrl = `${BASE_URL}/tv/${tmdbId}/${season}/${episode}`;
     }
 
+    console.log(`[vidrock] Fetching embed page: ${embedUrl}`);
     const html = await fetchHTML(embedUrl);
     if (!html) return [];
 
-    // try to find a direct video URL (rare)
-    const direct = extractVideoUrl(html, embedUrl);
-    if (direct) {
+    // Try to extract a direct video URL (if the page contains one)
+    let directUrl = extractVideoUrl(html, embedUrl);
+    if (directUrl) {
+      console.log(`[vidrock] Extracted direct video: ${directUrl}`);
       return [{
-        name: 'VidRock - Direct',
+        name: `VidRock - Direct Stream`,
         title: displayTitle,
-        url: direct,
+        url: directUrl,
         quality: 'Auto',
         headers: VIDEO_HEADERS,
         provider: 'vidrock'
       }];
     }
 
-    // fallback – open in external browser
+    // Fallback: return the embed URL (will open in external browser)
+    console.log(`[vidrock] No direct video found, returning embed URL as fallback`);
     return [{
-      name: 'VidRock - Open in Browser',
+      name: `VidRock - Open in Browser`,
       title: displayTitle,
       url: embedUrl,
       quality: 'Auto',
