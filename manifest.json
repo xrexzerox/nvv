@@ -42,30 +42,17 @@
       "contentLanguage": ["en", "ja"]
     },
     {
-      "id": "pinoyhub",
-      "name": "PinoyHub",
-      "description": "Pinoy Movies Hub – extracts video sources from dooplayer API (embed & direct links).",
-      "version": "1.0.1",
+      "id": "4khdhubNEW",
+      "name": "4khdhubNEW",
+      "description": "4K movie/TV streams from 4khdhub domains – extracts direct links from HubCloud, HubDrive, HubCDN, 10Gbps, BuzzServer, etc. Supports FSL domains and only English streams.",
+      "version": "1.0.0",
       "author": "xrexzerox",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/pinoyhub.js",
+      "filename": "providers/4khdhubnew.js",
       "enabled": true,
-      "formats": ["m3u8", "mp4"],
-      "logo": "https://www.google.com/s2/favicons?domain=pinoymovieshub.win&sz=128",
-      "contentLanguage": ["en", "tl"]
-    },
-    {
-  "id": "vidrock",
-  "name": "VidRock",
-  "description": "Video streams from vidrock.net",
-  "version": "1.0.0",
-  "author": "xrexzerox",
-  "supportedTypes": ["movie", "tv"],
-  "filename": "providers/vidrock.js",
-  "enabled": true,
-  "formats": ["mp4", "m3u8"],
-  "logo": "https://www.google.com/s2/favicons?domain=vidrock.net&sz=128",
-  "contentLanguage": ["en"]
-}
+      "formats": ["mp4", "m3u8", "mkv"],
+      "logo": "https://www.google.com/s2/favicons?domain=4khdhub.dad&sz=128",
+      "contentLanguage": ["en"]
+    }
   ]
 }
