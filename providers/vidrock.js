@@ -118,26 +118,35 @@ async function getStreams(tmdbId, mediaType, season, episode) {
 
     if (mediaType === 'movie') {
       const title = await fetchTitleFromTMDB(tmdbId, 'movie');
-      if (!title) return [];
+      if (!title) {
+        console.log('[vidrock] TMDB title not found');
+        return [];
+      }
+      console.log(`[vidrock] TMDB title: "${title}"`);
       displayTitle = title;
       embedUrl = `${BASE_URL}/movie/${tmdbId}`;
     } else {
       const title = await fetchTitleFromTMDB(tmdbId, 'tv');
-      if (!title) return [];
+      if (!title) {
+        console.log('[vidrock] TMDB title not found');
+        return [];
+      }
+      console.log(`[vidrock] TMDB title: "${title}"`);
       displayTitle = `${title} S${season}E${episode}`;
       embedUrl = `${BASE_URL}/tv/${tmdbId}/${season}/${episode}`;
     }
 
-    console.log(`[vidrock] Fetching embed page: ${embedUrl}`);
+    console.log(`[vidrock] Fetching page: ${embedUrl}`);
     const html = await fetchHTML(embedUrl);
     if (!html) return [];
 
     // Try static extraction first
     let directUrl = extractVideoUrl(html, embedUrl);
     if (directUrl) {
-      console.log(`[vidrock] Extracted direct video: ${directUrl}`);
+      console.log('[vidrock] Found 1 URL from HTML');
+      console.log('[vidrock] Returning 1 stream(s)');
       return [{
-        name: `VidRock - Direct Stream`,
+        name: 'VIDROCK - Stream 1',
         title: displayTitle,
         url: directUrl,
         quality: 'Auto',
@@ -150,8 +159,10 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     console.log('[vidrock] No static video found, trying Puppeteer...');
     const urls = await extractVideoUrlsWithPuppeteer(embedUrl);
     if (urls.length) {
-      return urls.map(u => ({
-        name: `VidRock - Direct Stream`,
+      console.log(`[vidrock] Found ${urls.length} URL(s) via Puppeteer`);
+      console.log(`[vidrock] Returning ${urls.length} stream(s)`);
+      return urls.map((u, i) => ({
+        name: `VIDROCK - Stream ${i + 1}`,
         title: displayTitle,
         url: u,
         quality: 'Auto',
@@ -163,7 +174,7 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     // Fallback: embed URL
     console.log('[vidrock] No direct video found, returning embed URL as fallback');
     return [{
-      name: `VidRock - Open in Browser`,
+      name: 'VIDROCK - Open in Browser',
       title: displayTitle,
       url: embedUrl,
       quality: 'Auto',
