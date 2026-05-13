@@ -1,30 +1,125 @@
 // providers/pinoyhub.js
-let cheerio;
-try {
-  cheerio = require('cheerio-without-node-native');
-} catch (e) {
-  cheerio = require('cheerio');
-}
+const cheerio = require('cheerio');
+const puppeteer = require('puppeteer');
 
 const BASE_URL = 'https://pinoymovieshub.win';
 const TMDB_API_KEY = '6dc830f9624b43261325bed3bf7d0dfa';
 
+// ------------------------------------------------------------------
+// Default headers – update the cookie if it expires
+// ------------------------------------------------------------------
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
   'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
   'Accept-Language': 'en-US,en;q=0.9',
   'Referer': BASE_URL,
-  'Cookie': 'starstruck_7da72d90b632af60dd1158c068193d61=99f22538d0588cdd7ccfc783299f88a7' // update if expired
+  'Cookie': 'starstruck_7da72d90b632af60dd1158c068193d61=99f22538d0588cdd7ccfc783299f88a7'
 };
 
+// Headers used when playing the final video stream
 const VIDEO_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+  'User-Agent': HEADERS['User-Agent'],
   'Referer': BASE_URL,
   'Accept': 'video/webm,video/ogg,video/*;q=0.9,*/*;q=0.5'
 };
 
 // ------------------------------------------------------------------
-// Helper: fetch HTML
+// Puppeteer browser instance (reused)
+// ------------------------------------------------------------------
+let browser = null;
+
+/**
+ * Extracts the first .m3u8 or .mp4 URL from a player page using headless Chrome.
+ * Mimics the Python Selenium script exactly.
+ */
+async function extractMediaPuppeteer(pageUrl, timeoutMs = 15000) {
+  try {
+    if (!browser || !browser.isConnected()) {
+      browser = await puppeteer.launch({
+        headless: 'new',
+        args: ['--no-sandbox', '--disable-gpu', '--mute-audio']
+      });
+    }
+
+    const page = await browser.newPage();
+
+    // Prevent detection as headless (optional)
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    });
+
+    let mediaUrl = null;
+
+    // Listen for network responses – capture any .m3u8 or .mp4
+    page.on('response', (response) => {
+      const url = response.url();
+      if (/\.(m3u8|mp4)(\?|$)/i.test(url) && response.ok()) {
+        mediaUrl = url;  // first match wins
+      }
+    });
+
+    // Load the page and wait until network is mostly idle
+    await page.goto(pageUrl, { waitUntil: 'networkidle2', timeout: timeoutMs });
+
+    // If no media request appeared, simulate video play and wait a bit
+    if (!mediaUrl) {
+      try {
+        await page.evaluate(() => {
+          const v = document.querySelector('video');
+          if (v) v.play();
+        });
+      } catch (e) {}
+
+      try {
+        await page.waitForResponse(
+          (res) => /\.(m3u8|mp4)(\?|$)/i.test(res.url()) && res.ok(),
+          { timeout: 5000 }
+        );
+      } catch (e) {}
+    }
+
+    await page.close();
+    return mediaUrl;  // null if nothing found
+  } catch (err) {
+    console.error(`[pinoyhub] Puppeteer extraction error for ${pageUrl}: ${err.message}`);
+    return null;
+  }
+}
+
+// ------------------------------------------------------------------
+// Optional: static HTML extraction (fallback if Puppeteer fails)
+// ------------------------------------------------------------------
+async function extractDirectMediaUrl(pageUrl) {
+  try {
+    const res = await fetch(pageUrl, { headers: HEADERS, redirect: 'follow' });
+    if (!res.ok) return null;
+    const html = await res.text();
+    const $ = cheerio.load(html);
+
+    // Check <video> tag
+    const videoSrc = $('video').attr('src');
+    if (videoSrc && /\.(m3u8|mp4)/i.test(videoSrc)) return videoSrc;
+
+    // Check <source> inside <video>
+    const sourceSrc = $('video source[type*="video"]').attr('src');
+    if (sourceSrc && /\.(m3u8|mp4)/i.test(sourceSrc)) return sourceSrc;
+
+    // Look inside <script> tags
+    const scripts = $('script').map((i, el) => $(el).html()).get();
+    for (const script of scripts) {
+      if (!script) continue;
+      const match = script.match(/(["'])(https?:\/\/[^"']*\.(?:m3u8|mp4)[^"']*)\1/);
+      if (match) return match[2];
+    }
+
+    return null;
+  } catch (err) {
+    return null;
+  }
+}
+
+// ------------------------------------------------------------------
+// General fetch helpers
 // ------------------------------------------------------------------
 async function fetchHTML(url) {
   try {
@@ -69,7 +164,11 @@ async function resolveInternalLink(linkUrl) {
 function extractDownloadLinks(html) {
   const $ = cheerio.load(html);
   const table = $('#download .links_table table');
-  if (!table.length) return [];
+  if (!table.length) {
+    console.log('[pinoyhub] Download table not found');
+    return [];
+  }
+
   const links = [];
   table.find('tbody tr').each((i, row) => {
     const cols = $(row).find('td');
@@ -89,60 +188,48 @@ function extractDownloadLinks(html) {
 // TMDB helpers
 // ------------------------------------------------------------------
 async function fetchTitleFromTMDB(tmdbId, mediaType) {
-  const url = mediaType === 'tv'
+  const endpoint = mediaType === 'tv'
     ? `https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_API_KEY}`
     : `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${TMDB_API_KEY}`;
-  const data = await fetchJSON(url);
+  const data = await fetchJSON(endpoint);
   if (!data) return null;
   return mediaType === 'tv' ? (data.name || data.original_name) : (data.title || data.original_title);
 }
 
 function slugify(title) {
-  return title.toLowerCase()
+  return title
+    .toLowerCase()
     .replace(/[^\w\s-]/g, '')
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
 }
 
-async function getSeriesSlug(tmdbId) {
-  const title = await fetchTitleFromTMDB(tmdbId, 'tv');
-  if (!title) throw new Error('Cannot derive series slug from TMDB');
-  return slugify(title);
-}
-
 // ------------------------------------------------------------------
-// Main exported function
+// Main function – the addon calls this
 // ------------------------------------------------------------------
 async function getStreams(tmdbId, mediaType, season, episode) {
   console.log(`[pinoyhub] === START for ${mediaType} TMDB ID:${tmdbId} S${season}E${episode} ===`);
 
   try {
-    let pageUrl, displayTitle;
+    const tmdbTitle = await fetchTitleFromTMDB(tmdbId, mediaType);
+    if (!tmdbTitle) {
+      console.log('[pinoyhub] TMDB title not found');
+      return [];
+    }
+    console.log(`[pinoyhub] TMDB title: "${tmdbTitle}"`);
 
+    let pageUrl, displayTitle;
     if (mediaType === 'movie') {
-      const movieTitle = await fetchTitleFromTMDB(tmdbId, 'movie');
-      if (!movieTitle) {
-        console.log('[pinoyhub] TMDB title not found');
-        return [];
-      }
-      console.log(`[pinoyhub] TMDB title: "${movieTitle}"`);
-      displayTitle = movieTitle; // use full movie title
-      const movieSlug = slugify(movieTitle);
+      const movieSlug = slugify(tmdbTitle);
       pageUrl = `${BASE_URL}/movies/${movieSlug}/`;
+      displayTitle = tmdbTitle;
     } else {
-      const seriesTitle = await fetchTitleFromTMDB(tmdbId, 'tv');
-      if (!seriesTitle) {
-        console.log('[pinoyhub] TMDB title not found');
-        return [];
-      }
-      console.log(`[pinoyhub] TMDB title: "${seriesTitle}"`);
-      displayTitle = `${seriesTitle} S${season}E${episode}`;
-      const seriesSlug = slugify(seriesTitle);
+      const seriesSlug = slugify(tmdbTitle);
       pageUrl = `${BASE_URL}/episodes/${seriesSlug}-${season}x${episode}/`;
+      displayTitle = `${tmdbTitle} S${season}E${episode}`;
     }
 
-    console.log(`[pinoyhub] Fetching page: ${pageUrl}`);
     const html = await fetchHTML(pageUrl);
     if (!html) return [];
 
@@ -150,31 +237,54 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     if (links.length === 0) return [];
 
     const streams = [];
-    for (let i = 0; i < links.length; i++) {
-      const link = links[i];
-      // Skip subtitle-only links
-      if (link.quality.toLowerCase() === 'subtitle' || link.language.toLowerCase() === 'english') continue;
+    for (const link of links) {
+      // Skip subtitle-only rows
+      if (/subtitle/i.test(link.quality) || /subtitle/i.test(link.language)) {
+        console.log(`[pinoyhub] Skipping subtitle row: ${link.quality} / ${link.language}`);
+        continue;
+      }
 
       console.log(`[pinoyhub] Processing ${link.quality} / ${link.language}: ${link.url}`);
       const externalUrl = await resolveInternalLink(link.url);
       if (!externalUrl) continue;
 
+      // ---- New extraction logic ----
+      let finalUrl = await extractMediaPuppeteer(externalUrl);   // 1. Try Puppeteer
+      if (!finalUrl) {
+        finalUrl = await extractDirectMediaUrl(externalUrl);     // 2. Fallback to static HTML
+      }
+      if (!finalUrl) {
+        finalUrl = externalUrl;                                  // 3. Keep player page URL
+      }
+
       streams.push({
-        name: `PinoyHub - Stream ${streams.length + 1}`,
-        title: displayTitle,
-        url: externalUrl,
-        quality: 'Auto',
-        headers: VIDEO_HEADERS,
+        name: `PinoyHub - ${link.quality}`,
+        title: `${displayTitle} [${link.language}]`,
+        url: finalUrl,
+        quality: link.quality,
+        headers: finalUrl !== externalUrl
+          ? { ...VIDEO_HEADERS, Referer: externalUrl }
+          : VIDEO_HEADERS,
         provider: 'pinoyhub'
       });
     }
 
     console.log(`[pinoyhub] Returning ${streams.length} stream(s)`);
     return streams;
+
   } catch (err) {
     console.error('[pinoyhub] error:', err.message);
     return [];
   }
 }
 
-module.exports = { getStreams };
+// Cleanup function (call it when your addon shuts down to close the browser)
+async function close() {
+  if (browser) {
+    await browser.close();
+    browser = null;
+    console.log('[pinoyhub] Puppeteer browser closed');
+  }
+}
+
+module.exports = { getStreams, close };
