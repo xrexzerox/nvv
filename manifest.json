@@ -53,6 +53,19 @@
   "formats": ["mp4", "mkv", "m3u8"],
   "logo": "https://i.postimg.cc/DZpW6Xfb/4khdhub.png",
   "contentLanguage": ["en", "hi", "ta", "te", "ml", "kn", "bn", "pa", "es", "fr", "de", "it", "ko", "ja", "zh", "tr", "pt", "ar"]
+},
+    {
+  "id": "pinoymovieshub",
+  "name": "PinoyMoviesHub",
+  "description": "Filipino movies from PinoyMoviesHub",
+  "version": "1.0.0",
+  "author": "Enhanced",
+  "supportedTypes": ["movie"],
+  "filename": "providers/pinoymovieshub.js",
+  "enabled": true,
+  "formats": ["mp4", "m3u8", "webm"],
+  "logo": "https://i.postimg.cc/DZpW6Xfb/pinoymovieshub.png",
+  "contentLanguage": ["tl", "fil", "en"]
 }
   ]
 }
