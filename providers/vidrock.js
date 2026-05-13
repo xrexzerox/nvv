@@ -1,10 +1,11 @@
-// providers/vidrock.js
 let cheerio;
 try {
   cheerio = require('cheerio-without-node-native');
 } catch (e) {
   cheerio = require('cheerio');
 }
+
+const puppeteer = require('puppeteer');
 
 const BASE_URL = 'https://vidrock.net';
 const TMDB_API_KEY = '6dc830f9624b43261325bed3bf7d0dfa';
@@ -56,31 +57,54 @@ async function fetchTitleFromTMDB(tmdbId, mediaType) {
 }
 
 // ------------------------------------------------------------------
-// Extract video URL from the embed page
+// Static HTML extractor
 // ------------------------------------------------------------------
 function extractVideoUrl(html, baseUrl) {
   const $ = cheerio.load(html);
-  // Look for iframe (some sites embed another player)
   const iframe = $('iframe').first();
   if (iframe.length && iframe.attr('src')) {
     let src = iframe.attr('src');
     if (src.startsWith('/')) src = baseUrl + src;
     return src;
   }
-  // Look for video element
   const video = $('video').first();
-  if (video.length && video.attr('src')) {
-    return video.attr('src');
-  }
-  // Look for source tag inside video
+  if (video.length && video.attr('src')) return video.attr('src');
   const source = $('video source').first();
-  if (source.length && source.attr('src')) {
-    return source.attr('src');
-  }
-  // Search for .mp4 or .m3u8 in page source (sometimes in JSON or data attributes)
+  if (source.length && source.attr('src')) return source.attr('src');
   const matches = html.match(/(https?:\/\/[^\s"']+\.(?:m3u8|mp4)[^\s"']*)/i);
   if (matches) return matches[1];
   return null;
+}
+
+// ------------------------------------------------------------------
+// Puppeteer extractor
+// ------------------------------------------------------------------
+async function extractVideoUrlsWithPuppeteer(embedUrl) {
+  const browser = await puppeteer.launch({ headless: true });
+  const page = await browser.newPage();
+
+  const videoUrls = new Set();
+
+  page.on('response', async (response) => {
+    const url = response.url();
+    if (url.match(/\.(m3u8|mp4)(\?.*)?$/i)) {
+      console.log('[vidrock] Found stream:', url);
+      videoUrls.add(url);
+    }
+  });
+
+  await page.goto(embedUrl, { waitUntil: 'networkidle2' });
+
+  const iframeSrc = await page.$eval('iframe', el => el.src).catch(() => null);
+  const videoSrc = await page.$eval('video', el => el.src).catch(() => null);
+  const sourceSrc = await page.$eval('video source', el => el.src).catch(() => null);
+
+  [iframeSrc, videoSrc, sourceSrc].forEach(src => {
+    if (src) videoUrls.add(src);
+  });
+
+  await browser.close();
+  return Array.from(videoUrls);
 }
 
 // ------------------------------------------------------------------
@@ -112,28 +136,45 @@ async function getStreams(tmdbId, mediaType, season, episode) {
       embedUrl = `${BASE_URL}/tv/${tmdbId}/${season}/${episode}`;
     }
 
-    console.log(`[vidrock] Fetching embed page: ${embedUrl}`);
+    console.log(`[vidrock] Fetching page: ${embedUrl}`);
     const html = await fetchHTML(embedUrl);
     if (!html) return [];
 
-    // Try to get direct video URL
-    let videoUrl = extractVideoUrl(html, embedUrl);
-    if (videoUrl) {
-      console.log(`[vidrock] Extracted direct video: ${videoUrl}`);
+    // Try static extraction first
+    let directUrl = extractVideoUrl(html, embedUrl);
+    if (directUrl) {
+      console.log('[vidrock] Found 1 URL from HTML');
+      console.log('[vidrock] Returning 1 stream(s)');
       return [{
-        name: `VidRock - Stream 1`,
+        name: 'VIDROCK - Stream 1',
         title: displayTitle,
-        url: videoUrl,
+        url: directUrl,
         quality: 'Auto',
         headers: VIDEO_HEADERS,
         provider: 'vidrock'
       }];
     }
 
-    // If no direct URL found, fallback to embed page (external player)
-    console.log(`[vidrock] No direct video found, using embed URL fallback`);
+    // If static fails, try Puppeteer
+    console.log('[vidrock] No static video found, trying Puppeteer...');
+    const urls = await extractVideoUrlsWithPuppeteer(embedUrl);
+    if (urls.length) {
+      console.log(`[vidrock] Found ${urls.length} URL(s) via Puppeteer`);
+      console.log(`[vidrock] Returning ${urls.length} stream(s)`);
+      return urls.map((u, i) => ({
+        name: `VIDROCK - Stream ${i + 1}`,
+        title: displayTitle,
+        url: u,
+        quality: 'Auto',
+        headers: VIDEO_HEADERS,
+        provider: 'vidrock'
+      }));
+    }
+
+    // Fallback: embed URL
+    console.log('[vidrock] No direct video found, returning embed URL as fallback');
     return [{
-      name: `VidRock - Embed (Open in Browser)`,
+      name: 'VIDROCK - Embed (Open in Browser)',
       title: displayTitle,
       url: embedUrl,
       quality: 'Auto',
