@@ -1,6 +1,6 @@
 // KissKH.ovh Plugin for Nuvio
 // Working version - Google Script key generation confirmed
-// Supports: Movies & TV (Korean dramas, Asian content)
+// Supports: Movies & TV with subtitle URL fetching
 
 var MAIN_URL = "https://kisskh.ovh";
 var GOOGLE_SCRIPT_API = "https://script.google.com/macros/s/AKfycbzn8B31PuDxzaMa9_CQ0VGEDasFqfzI5bXvjaIZH4DM8DNq9q6xj1ALvZNz_JT3jF0suA/exec";
@@ -33,6 +33,17 @@ function fetchJson(url, headers) {
         });
 }
 
+function fetchText(url, headers) {
+    var opts = { headers: headers || {} };
+    return fetch(url, opts)
+        .then(function(response) {
+            if (!response.ok) {
+                throw new Error("HTTP " + response.status);
+            }
+            return response.text();
+        });
+}
+
 // Generate kkey via Google Script (confirmed working)
 function generateKey(epsId) {
     var keyUrl = GOOGLE_SCRIPT_API + "?id=" + epsId + "&version=2.8.10";
@@ -58,6 +69,45 @@ function getVideoSources(epsId, key) {
         }
         log("Video API keys: " + Object.keys(sources).join(", "));
         return sources;
+    });
+}
+
+// Get subtitle data for an episode
+function getSubtitles(epsId, key) {
+    var subApi = MAIN_URL + "/api/Sub/" + epsId;
+    var customHeaders = {};
+
+    if (key) {
+        customHeaders["kkey"] = key;
+    }
+
+    log("Fetching subtitles for episode: " + epsId);
+
+    return fetchText(subApi, customHeaders).then(function(text) {
+        if (!text || text.length === 0) {
+            log("No subtitle data returned");
+            return null;
+        }
+
+        // Check if it's JSON
+        var jsonData = safeJsonParse(text);
+        if (jsonData) {
+            log("Subtitle data is JSON");
+            return jsonData;
+        }
+
+        // Check if it's a URL
+        if (text.indexOf("http") === 0) {
+            log("Subtitle is direct URL: " + text.substring(0, 60));
+            return { url: text.trim(), encrypted: false };
+        }
+
+        // Likely encrypted text
+        log("Subtitle data appears encrypted (length: " + text.length + ")");
+        return { text: text, encrypted: true };
+    }).catch(function(err) {
+        log("Subtitle fetch error: " + err.message);
+        return null;
     });
 }
 
@@ -140,17 +190,14 @@ function findEpisode(episodes, mediaType, episodeNum) {
 function extractQuality(url) {
     if (!url) return "Auto";
 
-    // Pattern: Ep1_index.m3u8, Ep2_720p_index.m3u8, etc.
     var qMatch = url.match(/_(\d+p)_/i);
     if (qMatch) return qMatch[1];
 
-    // Pattern: 720p, 1080p in URL
     if (url.match(/1080p/i)) return "1080p";
     if (url.match(/720p/i)) return "720p";
     if (url.match(/480p/i)) return "480p";
     if (url.match(/360p/i)) return "360p";
 
-    // Pattern: hd, sd, fhd
     if (url.match(/fhd/i)) return "1080p";
     if (url.match(/hd/i)) return "720p";
     if (url.match(/sd/i)) return "480p";
@@ -158,8 +205,8 @@ function extractQuality(url) {
     return "Auto";
 }
 
-// Convert sources to Nuvio streams
-function sourcesToStreams(sources, dramaTitle, epTitle, epNumber) {
+// Convert sources to Nuvio streams with optional subtitles
+function sourcesToStreams(sources, dramaTitle, epTitle, epNumber, subtitleData) {
     var streams = [];
     var links = [];
 
@@ -174,6 +221,24 @@ function sourcesToStreams(sources, dramaTitle, epTitle, epNumber) {
     var displayTitle = dramaTitle || "KissKH";
     var displayEp = epTitle || ("Episode " + epNumber);
 
+    // Build subtitle object if available
+    var subtitles = null;
+    if (subtitleData) {
+        if (subtitleData.url) {
+            subtitles = [{
+                url: subtitleData.url,
+                lang: "en",
+                label: "English"
+            }];
+        } else if (subtitleData.text && !subtitleData.encrypted) {
+            subtitles = [{
+                url: "data:text/plain;base64," + btoa(subtitleData.text),
+                lang: "en",
+                label: "English"
+            }];
+        }
+    }
+
     for (var i = 0; i < links.length; i++) {
         var link = links[i];
         if (!link) continue;
@@ -185,7 +250,7 @@ function sourcesToStreams(sources, dramaTitle, epTitle, epNumber) {
             var quality = extractQuality(link);
             var typeLabel = isM3u8 ? "HLS" : "MP4";
 
-            streams.push({
+            var streamObj = {
                 name: "KissKH | " + quality + " | " + typeLabel,
                 title: displayEp + " | " + displayTitle + " | " + quality + " | KissKH",
                 url: link,
@@ -193,11 +258,17 @@ function sourcesToStreams(sources, dramaTitle, epTitle, epNumber) {
                 provider: "kisskh",
                 headers: {
                     "Origin": MAIN_URL,
-                    "Referer": MAIN_URL,
+                    "Referer": MAIN_URL + "/",
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                 }
-            });
+            };
 
+            // Add subtitles if available
+            if (subtitles) {
+                streamObj.subtitles = subtitles;
+            }
+
+            streams.push(streamObj);
             log("Added stream: " + typeLabel + " " + quality + " - " + link.substring(0, 60));
         }
     }
@@ -227,12 +298,20 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         })
         .then(function(info) {
             return generateKey(info.episode.id).then(function(key) {
-                return getVideoSources(info.episode.id, key).then(function(sources) {
+                // Fetch both video and subtitles in parallel
+                return Promise.all([
+                    getVideoSources(info.episode.id, key),
+                    getSubtitles(info.episode.id, key)
+                ]).then(function(results) {
+                    var sources = results[0];
+                    var subData = results[1];
+
                     return sourcesToStreams(
                         sources,
                         info.drama.title,
                         info.episode.title,
-                        info.episode.number
+                        info.episode.number,
+                        subData
                     );
                 });
             });
