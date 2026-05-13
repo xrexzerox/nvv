@@ -13,7 +13,6 @@
  * 7. Auto-headers for workers.dev: Referer https://gamerxyt.com/.
  * 8. Full URL logging (no slice) for transparent debugging.
  * 9. Max 2 candidates per file with provider categories (gdrive, workers, fsl, r2).
- * 10. Language filter: only English streams are returned (excludes Hindi, Tamil, etc.)
  *
  *  ENJOY!!!
  */
@@ -975,33 +974,6 @@ function extractLangHint(item) {
   return [item.fileTitle || "", item.label || "", item.rawHtml || ""].join(" ");
 }
 
-// ------------------- LANGUAGE FILTER (ONLY ENGLISH) -------------------
-function isEnglishStream(stream) {
-  // Combine all text from the stream that may contain language hints
-  var textForLang = (stream.name || "") + " " + (stream.title || "") + " " + (stream.quality || "");
-  var lang = inferLang(textForLang).toLowerCase();
-  
-  // Accept if language is exactly "en" or contains "english"
-  if (lang === "en" || lang.indexOf("english") !== -1) {
-    // But also check raw text for explicit non-English keywords (to catch cases where inferLang might have missed)
-    var raw = textForLang.toLowerCase();
-    var nonEnglish = ["hindi", "tamil", "telugu", "malayalam", "kannada", "bengali", "punjabi", "multi audio"];
-    for (var i = 0; i < nonEnglish.length; i++) {
-      if (raw.indexOf(nonEnglish[i]) !== -1) {
-        return false;
-      }
-    }
-    // Dual Audio without English is also rejected (if "dual audio" appears and "english" does not)
-    if (raw.indexOf("dual audio") !== -1 && raw.indexOf("english") === -1) {
-      return false;
-    }
-    return true;
-  }
-  // Reject everything else (e.g., Hindi, Tamil, Multi Audio, Dual Audio without English, etc.)
-  return false;
-}
-// ---------------------------------------------------------------------
-
 function extractFromPage(contentUrl, mediaType, season, episode, meta) {
   return fetchText(contentUrl).then(function(html) {
     var $ = cheerio.load(html);
@@ -1029,14 +1001,8 @@ function extractFromPage(contentUrl, mediaType, season, episode, meta) {
       var streams = [];
       for (var i = 0; i < groups.length; i += 1) streams = streams.concat(groups[i] || []);
       streams = dedupeStreams(streams);
-      
-      // ----- FILTER: keep only English streams -----
-      var englishStreams = streams.filter(isEnglishStream);
-      if (englishStreams.length === 0 && streams.length > 0 && DEBUG) {
-        dbg("[extractFromPage] All streams filtered out because none are English. Original count:", streams.length);
-      }
-      englishStreams.sort(function(a, b) { return hostConfidence(b.url) - hostConfidence(a.url); });
-      return englishStreams;
+      streams.sort(function(a, b) { return hostConfidence(b.url) - hostConfidence(a.url); });
+      return streams;
     });
   });
 }
