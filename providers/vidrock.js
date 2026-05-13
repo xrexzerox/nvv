@@ -31,7 +31,6 @@ const PLAYBACK_HEADERS = {
 
 // ------------------------------------------------------------------
 // AES-256-CBC encryption (local, no external server)
-// Returns combined base64 (IV + ciphertext) as a single string.
 // ------------------------------------------------------------------
 function encryptAesCbc(text, passphrase) {
   // Derive a 32-byte key from the passphrase (SHA-256)
@@ -41,31 +40,17 @@ function encryptAesCbc(text, passphrase) {
   const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
   let encrypted = cipher.update(text, 'utf8', 'base64');
   encrypted += cipher.final('base64');
-  // Combine IV (raw bytes) + ciphertext (base64 decoded) into one buffer,
-  // then return as base64. This is what Vidrock likely expects.
-  const ciphertextBuf = Buffer.from(encrypted, 'base64');
-  const combined = Buffer.concat([iv, ciphertextBuf]);
-  return combined.toString('base64');
-}
-
-// ------------------------------------------------------------------
-// Helper: fetch with timeout
-// ------------------------------------------------------------------
-async function fetchWithTimeout(url, options = {}, timeout = 15000) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeout);
-  try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    clearTimeout(timeoutId);
-    return response;
-  } catch (err) {
-    clearTimeout(timeoutId);
-    throw err;
-  }
+  // Combine IV + encrypted data (IV is needed for decryption on the server)
+  // Vidrock expects the IV prepended? The original remote server likely returned
+  // a base64 string that includes the IV. We'll assume IV is separate.
+  // Many implementations send IV as first 16 bytes of the base64 string.
+  // Let's do: base64(iv) + ':' + base64(encrypted)
+  const ivBase64 = iv.toString('base64');
+  return ivBase64 + ':' + encrypted;
 }
 
 async function makeRequest(url, options = {}) {
-  const res = await fetchWithTimeout(url, {
+  const res = await fetch(url, {
     method: options.method || 'GET',
     headers: { ...HEADERS, ...options.headers },
     ...options
@@ -107,33 +92,27 @@ function needsHeaders(serverName, url) {
 }
 
 async function parseAstraPlaylist(playlistUrl, serverName, mediaInfo, seasonNum, episodeNum) {
-  try {
-    const res = await fetchWithTimeout(playlistUrl, { headers: PLAYBACK_HEADERS }, 15000);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const streams = [];
-    if (Array.isArray(data)) {
-      for (const item of data) {
-        if (item.url && item.resolution) {
-          const quality = `${item.resolution}p`;
-          let mediaTitle = mediaInfo.title;
-          if (seasonNum && episodeNum) mediaTitle = `${mediaInfo.title} S${seasonNum}E${episodeNum}`;
-          streams.push({
-            name: `Vidrock ${serverName} - ${quality}`,
-            title: mediaTitle,
-            url: item.url,
-            quality,
-            headers: PLAYBACK_HEADERS,
-            provider: 'vidrock'
-          });
-        }
+  const res = await fetch(playlistUrl, { headers: PLAYBACK_HEADERS });
+  const data = await res.json();
+  const streams = [];
+  if (Array.isArray(data)) {
+    for (const item of data) {
+      if (item.url && item.resolution) {
+        const quality = `${item.resolution}p`;
+        let mediaTitle = mediaInfo.title;
+        if (seasonNum && episodeNum) mediaTitle = `${mediaInfo.title} S${seasonNum}E${episodeNum}`;
+        streams.push({
+          name: `Vidrock ${serverName} - ${quality}`,
+          title: mediaTitle,
+          url: item.url,
+          quality,
+          headers: PLAYBACK_HEADERS,
+          provider: 'vidrock'
+        });
       }
     }
-    return streams;
-  } catch (err) {
-    console.error(`[vidrock] Error parsing Astra playlist: ${err.message}`);
-    return [];
   }
+  return streams;
 }
 
 async function processVidrockResponse(data, mediaInfo, seasonNum, episodeNum) {
@@ -170,18 +149,6 @@ async function processVidrockResponse(data, mediaInfo, seasonNum, episodeNum) {
   return streams;
 }
 
-// Simple retry wrapper (2 attempts)
-async function retry(fn, maxAttempts = 2) {
-  for (let i = 0; i < maxAttempts; i++) {
-    try {
-      return await fn();
-    } catch (err) {
-      if (i === maxAttempts - 1) throw err;
-      await new Promise(r => setTimeout(r, 500));
-    }
-  }
-}
-
 async function fetchFromVidrock(mediaType, tmdbId, mediaInfo, seasonNum, episodeNum) {
   let itemId;
   if (mediaType === 'tv' && seasonNum && episodeNum) itemId = `${tmdbId}_${seasonNum}_${episodeNum}`;
@@ -191,11 +158,14 @@ async function fetchFromVidrock(mediaType, tmdbId, mediaInfo, seasonNum, episode
   const encodedId = encodeURIComponent(encrypted);
   const apiUrl = `${VIDROCK_BASE_URL}/api/${mediaType}/${encodedId}`;
   console.log(`[vidrock] API URL: ${apiUrl}`);
-  return retry(async () => {
+  try {
     const res = await makeRequest(apiUrl);
     const json = await res.json();
     return await processVidrockResponse(json, mediaInfo, seasonNum, episodeNum);
-  });
+  } catch (err) {
+    console.error(`[vidrock] API call failed: ${err.message}`);
+    return [];
+  }
 }
 
 async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
