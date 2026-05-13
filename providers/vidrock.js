@@ -56,11 +56,11 @@ async function fetchTitleFromTMDB(tmdbId, mediaType) {
 }
 
 // ------------------------------------------------------------------
-// Attempt to extract video URL from the page's HTML (simple iframe/video)
+// Extract video URL from the embed page
 // ------------------------------------------------------------------
 function extractVideoUrl(html, baseUrl) {
   const $ = cheerio.load(html);
-  // Look for iframe
+  // Look for iframe (some sites embed another player)
   const iframe = $('iframe').first();
   if (iframe.length && iframe.attr('src')) {
     let src = iframe.attr('src');
@@ -72,12 +72,12 @@ function extractVideoUrl(html, baseUrl) {
   if (video.length && video.attr('src')) {
     return video.attr('src');
   }
-  // Look for source inside video
+  // Look for source tag inside video
   const source = $('video source').first();
   if (source.length && source.attr('src')) {
     return source.attr('src');
   }
-  // Search for direct .m3u8 or .mp4 in the raw HTML
+  // Search for .mp4 or .m3u8 in page source (sometimes in JSON or data attributes)
   const matches = html.match(/(https?:\/\/[^\s"']+\.(?:m3u8|mp4)[^\s"']*)/i);
   if (matches) return matches[1];
   return null;
@@ -116,24 +116,24 @@ async function getStreams(tmdbId, mediaType, season, episode) {
     const html = await fetchHTML(embedUrl);
     if (!html) return [];
 
-    // Try to extract a direct video URL (if the page contains one)
-    let directUrl = extractVideoUrl(html, embedUrl);
-    if (directUrl) {
-      console.log(`[vidrock] Extracted direct video: ${directUrl}`);
+    // Try to get direct video URL
+    let videoUrl = extractVideoUrl(html, embedUrl);
+    if (videoUrl) {
+      console.log(`[vidrock] Extracted direct video: ${videoUrl}`);
       return [{
-        name: `VidRock - Direct Stream`,
+        name: `VidRock - Stream 1`,
         title: displayTitle,
-        url: directUrl,
+        url: videoUrl,
         quality: 'Auto',
         headers: VIDEO_HEADERS,
         provider: 'vidrock'
       }];
     }
 
-    // Fallback: return the embed URL (will open in external browser)
-    console.log(`[vidrock] No direct video found, returning embed URL as fallback`);
+    // If no direct URL found, fallback to embed page (external player)
+    console.log(`[vidrock] No direct video found, using embed URL fallback`);
     return [{
-      name: `VidRock - Open in Browser`,
+      name: `VidRock - Embed (Open in Browser)`,
       title: displayTitle,
       url: embedUrl,
       quality: 'Auto',
