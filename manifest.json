@@ -79,6 +79,19 @@
       "formats": ["m3u8", "mp4"],
       "logo": "https://www.google.com/s2/favicons?domain=kisskh.ovh&sz=128",
       "contentLanguage": ["en", "ko", "ja", "zh"]
-    }
+    },
+    {
+  "id": "okru",
+  "name": "OK.ru",
+  "description": "OK.ru (Odnoklassniki) video streams - extracts direct MP4/HLS from embed pages",
+  "version": "1.0.0",
+  "author": "Enhanced",
+  "supportedTypes": ["movie", "tv"],
+  "filename": "providers/okru.js",
+  "enabled": true,
+  "formats": ["mp4", "m3u8"],
+  "logo": "https://www.google.com/s2/favicons?domain=ok.ru&sz=128",
+  "contentLanguage": ["ru", "en"]
+}
   ]
 }
