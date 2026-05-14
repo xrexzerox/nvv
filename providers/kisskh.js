@@ -1,3 +1,13 @@
+/**
+ * KissKH Nuvio Plugin - Auto-detect Movie/TV by TMDB ID
+ * Domain: kisskh.ovh
+ * Supports: Movies & TV Shows (Asian dramas)
+ * 
+ * Entry point signatures:
+ *   Movie: getStreams("1007757")
+ *   TV:    getStreams("287011", "1", "1")
+ */
+
 var MAIN_URL = "https://kisskh.ovh";
 var GOOGLE_SCRIPT_API = "https://script.google.com/macros/s/AKfycbzn8B31PuDxzaMa9_CQ0VGEDasFqfzI5bXvjaIZH4DM8DNq9q6xj1ALvZNz_JT3jF0suA/exec";
 var TMDB_API_KEY = "b030404650f279792a8d3287232358e3";
@@ -122,6 +132,52 @@ function similarityScore(query, candidate) {
     return Math.floor((1 - dist / maxLen) * 4000);
 }
 
+// ===== TMDB AUTO-DETECT (same logic as 4KHDHub) =====
+
+function getTmdbInfoAuto(tmdbId) {
+    var movieUrl = "https://api.themoviedb.org/3/movie/" + tmdbId + "?api_key=" + TMDB_API_KEY;
+    return fetchJson(movieUrl).then(function(data) {
+        var title = data.title || "";
+        var original = data.original_title || title;
+        var year = (data.release_date || "").split("-")[0];
+        return {
+            type: "movie",
+            title: title,
+            original: original,
+            year: year,
+            raw: data
+        };
+    }).catch(function() {
+        var tvUrl = "https://api.themoviedb.org/3/tv/" + tmdbId + "?api_key=" + TMDB_API_KEY;
+        return fetchJson(tvUrl).then(function(data) {
+            var title = data.name || "";
+            var original = data.original_name || title;
+            var year = (data.first_air_date || "").split("-")[0];
+            return {
+                type: "tv",
+                title: title,
+                original: original,
+                year: year,
+                raw: data
+            };
+        });
+    }).catch(function() {
+        return { type: "", title: "", original: "", year: "", raw: null };
+    });
+}
+
+function getTmdbEpisodeTitle(tmdbId, season, episode) {
+    if (!season || !episode) return Promise.resolve("");
+    var url = "https://api.themoviedb.org/3/tv/" + tmdbId + "/season/" + season + "/episode/" + episode + "?api_key=" + TMDB_API_KEY;
+    return fetchJson(url).then(function(data) {
+        return data.name || "";
+    }).catch(function() {
+        return "";
+    });
+}
+
+// ===== KISSKH SPECIFIC =====
+
 function generateKey(epsId) {
     var keyUrl = GOOGLE_SCRIPT_API + "?id=" + epsId + "&version=2.8.10";
     log("Generating key for episode: " + epsId);
@@ -144,18 +200,6 @@ function getVideoSources(epsId, key) {
     });
 }
 
-function getTmdbTitle(tmdbId, mediaType) {
-    var tmdbUrl = "https://api.themoviedb.org/3/" + mediaType + "/" + tmdbId + "?api_key=" + TMDB_API_KEY;
-    log("Fetching TMDB: " + tmdbId);
-    return fetchJson(tmdbUrl).then(function(data) {
-        if (!data) throw new Error("TMDB fetch failed");
-        var title = data.title || data.name || data.original_title || data.original_name;
-        var year = (data.release_date || data.first_air_date || "").substring(0, 4);
-        log("TMDB: " + title + " (" + year + ")");
-        return { title: title, year: year, data: data };
-    });
-}
-
 function searchKisskh(title) {
     var searchUrl = MAIN_URL + "/api/DramaList/Search?q=" + encodeURIComponent(title) + "&type=0";
     log("Searching KissKH: " + title);
@@ -164,14 +208,15 @@ function searchKisskh(title) {
             throw new Error("No KissKH results for: " + title);
         }
 
-        // === STRICT SCORING - PREVENTS WRONG MATCHES ===
         var bestMatch = null;
         var bestScore = -1;
 
         for (var i = 0; i < searchList.length; i++) {
             var item = searchList[i];
             var itemTitle = item.title || "";
-            var score = similarityScore(title, itemTitle);
+            // Strip year suffix like " (2026)" before scoring
+            var itemTitleClean = itemTitle.replace(/\s*\(\d{4}\)\s*$/, "").trim();
+            var score = similarityScore(title, itemTitleClean);
 
             log("Result " + (i + 1) + " : " + itemTitle + " - Score: " + score);
 
@@ -181,7 +226,7 @@ function searchKisskh(title) {
             }
         }
 
-        log("Best match: " + (bestMatch ? bestMatch.title : "None") + " Score: " + bestScore);
+        log("Best match: " + (bestMatch ? bestMatch.title : "None") + " Score: " + bestScore + " (threshold: 6000)");
 
         if (!bestMatch || bestScore < 6000) {
             throw new Error("No confident match found (score < 6000)");
@@ -279,42 +324,72 @@ function sourcesToStreams(sources, dramaTitle, epTitle, epNumber) {
     return streams;
 }
 
-function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
-    log("Starting TMDB: " + tmdbId + " Type: " + mediaType + " S" + seasonNum + "E" + episodeNum);
+// ===== ENTRY POINT (same signature as 4KHDHub) =====
 
-    return getTmdbTitle(tmdbId, mediaType)
-        .then(function(tmdbInfo) {
-            return searchKisskh(tmdbInfo.title);
+function getStreams(tmdbId, season, episode) {
+    var seasonStr = season || "";
+    var episodeStr = episode || "";
+    log("getStreams called: " + tmdbId + " S" + seasonStr + "E" + episodeStr);
+
+    // If season and episode are provided, force TV mode (avoids TMDB ID namespace collision)
+    var forceTv = !!(season && episode);
+
+    var tmdbPromise = forceTv
+        ? fetchJson("https://api.themoviedb.org/3/tv/" + tmdbId + "?api_key=" + TMDB_API_KEY).then(function(data) {
+            var title = data.name || "";
+            var original = data.original_name || title;
+            var year = (data.first_air_date || "").split("-")[0];
+            return { type: "tv", title: title, original: original, year: year, raw: data };
+        }).catch(function() {
+            return { type: "", title: "", original: "", year: "", raw: null };
         })
-        .then(function(drama) {
-            return getDramaDetail(drama.id).then(function(detail) {
-                return { drama: drama, detail: detail };
-            });
-        })
-        .then(function(info) {
-            var targetEp = findEpisode(info.detail.episodes, mediaType, episodeNum);
-            return { drama: info.drama, episode: targetEp };
-        })
-        .then(function(info) {
-            return generateKey(info.episode.id).then(function(key) {
-                return getVideoSources(info.episode.id, key).then(function(sources) {
-                    return sourcesToStreams(
-                        sources,
-                        info.drama.title,
-                        info.episode.title,
-                        info.episode.number
-                    );
-                });
-            });
-        })
-        .then(function(streams) {
-            log("Returning " + streams.length + " streams");
-            return streams;
-        })
-        .catch(function(err) {
-            log("Error: " + err.message);
+        : getTmdbInfoAuto(tmdbId);
+
+    return tmdbPromise.then(function(tmdbData) {
+        if (!tmdbData.type) {
+            log("Could not detect media type for TMDB ID: " + tmdbId);
             return [];
+        }
+        var mediaType = tmdbData.type;
+        log("Detected type: " + mediaType + " | Title: " + tmdbData.title + " | Year: " + tmdbData.year);
+
+        if (mediaType === "tv" && (!season || !episode)) {
+            log("TV show requires season and episode parameters");
+            return [];
+        }
+
+        var epPromise = (mediaType === "tv")
+            ? getTmdbEpisodeTitle(tmdbId, season, episode)
+            : Promise.resolve("");
+
+        return epPromise.then(function(epTitle) {
+            return searchKisskh(tmdbData.title).then(function(drama) {
+                return getDramaDetail(drama.id).then(function(detail) {
+                    return { drama: drama, detail: detail };
+                });
+            }).then(function(info) {
+                var targetEp = findEpisode(info.detail.episodes, mediaType, episode);
+                return { drama: info.drama, episode: targetEp };
+            }).then(function(info) {
+                return generateKey(info.episode.id).then(function(key) {
+                    return getVideoSources(info.episode.id, key).then(function(sources) {
+                        return sourcesToStreams(
+                            sources,
+                            info.drama.title,
+                            info.episode.title,
+                            info.episode.number
+                        );
+                    });
+                });
+            }).then(function(streams) {
+                log("Returning " + streams.length + " streams");
+                return streams;
+            });
         });
+    }).catch(function(err) {
+        log("Error: " + err.message);
+        return [];
+    });
 }
 
 if (typeof module !== "undefined" && module.exports) {
