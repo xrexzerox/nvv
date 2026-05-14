@@ -39,11 +39,22 @@ function hasSetTimeout() {
 
 function withTimeout(promise, ms) {
   if (!hasSetTimeout()) return promise;
+  var timer = null;
+  var timeoutPromise = new Promise(function(_, reject) {
+    timer = setTimeout(function() {
+      timer = null;
+      reject(new Error("TIMEOUT"));
+    }, ms);
+  });
   return Promise.race([
-    promise,
-    new Promise(function(_, reject) {
-      setTimeout(function() { reject(new Error("TIMEOUT")); }, ms);
-    })
+    promise.then(function(result) {
+      if (timer) { clearTimeout(timer); timer = null; }
+      return result;
+    }).catch(function(err) {
+      if (timer) { clearTimeout(timer); timer = null; }
+      throw err;
+    }),
+    timeoutPromise
   ]);
 }
 
