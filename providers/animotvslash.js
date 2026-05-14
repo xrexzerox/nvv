@@ -36,6 +36,9 @@ const EMBED_HEADERS = {
   'Sec-Fetch-Site': 'same-origin',
 };
 
+// Token cache to avoid repeated API calls
+const tokenCache = {};
+
 let cookieJar = {};
 
 function extractCookies(response) {
@@ -265,20 +268,24 @@ async function tryAdminAjax(postId, action, episodeNum) {
 }
 
 // ------------------------------------------------------------------
-// TOKEN TO STREAM URL — Fixed: skip HEAD, use GET directly
+// TOKEN TO STREAM URL — With rate limit handling
 // ------------------------------------------------------------------
 
 /**
  * Converts a provider token to a signed m3u8 URL
- * Skips HEAD request (causes 429 rate limits)
- * Uses GET with redirect follow directly
+ * Handles 429 rate limits with retry
  */
-async function resolveToken(token, embedUrl) {
+async function resolveToken(token, embedUrl, retryCount = 0) {
+  const cacheKey = `${token}`;
+  if (tokenCache[cacheKey]) {
+    console.log(`[animotvslash] [token] Cache hit`);
+    return tokenCache[cacheKey];
+  }
+
   const signedUrl = `https://tryembed.us.cc/s/${token}.m3u8`;
   console.log(`[animotvslash] [token] Resolving: ${signedUrl.substring(0, 80)}...`);
 
   try {
-    // Skip HEAD — go straight to GET to avoid 429
     const getRes = await fetchWithCookies(signedUrl, {
       method: 'GET',
       headers: {
@@ -290,9 +297,22 @@ async function resolveToken(token, embedUrl) {
 
     console.log(`[animotvslash] [token] GET status: ${getRes.status}`);
 
+    if (getRes.status === 429 && retryCount < 3) {
+      // Rate limited — wait and retry
+      const delay = Math.pow(2, retryCount) * 1000;
+      console.log(`[animotvslash] [token] 429, retrying in ${delay}ms...`);
+      await new Promise(r => setTimeout(r, delay));
+      return resolveToken(token, embedUrl, retryCount + 1);
+    }
+
     if (getRes.ok) {
-      console.log(`[animotvslash] [token] Final URL: ${getRes.url.substring(0, 100)}...`);
-      return getRes.url;
+      const finalUrl = getRes.url;
+      console.log(`[animotvslash] [token] Final URL: ${finalUrl.substring(0, 100)}...`);
+
+      // Cache the result
+      tokenCache[cacheKey] = finalUrl;
+
+      return finalUrl;
     }
 
     console.log(`[animotvslash] [token] GET failed: ${getRes.status}`);
@@ -526,6 +546,7 @@ async function getStreams(tmdbId, season, episode) {
         if (embedUrl) {
             console.log(`[animotvslash] embed URL: ${embedUrl}`);
 
+            // Try native HLS extraction
             const providerResults = await extractTryEmbed(embedUrl);
 
             if (providerResults.length > 0) {
@@ -543,6 +564,7 @@ async function getStreams(tmdbId, season, episode) {
                 }
             }
 
+            // ALWAYS add WebView fallback — this is the guaranteed working option
             streams.push({
                 name: `ANIMOTVSLASH - WebView`,
                 title: mediaType === 'tv' ? `S${seasonNum}E${episodeNum}` : 'Movie',
