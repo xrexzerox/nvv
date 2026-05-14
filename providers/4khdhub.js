@@ -1,9 +1,9 @@
 /**
- * 4KHDHub Nuvio Plugin - Complete Edition (with Timeouts)
+ * 4KHDHub Nuvio Plugin - QuickJS Compatible Edition
  * Domain: 4khdhub.link
  * Supports: Movies & TV Shows
- * Resolvers: HubCloud, HubDrive, HubCDN, PixelDrain, Workers.dev, R2.dev, GDrive, Gadgetsweb, Direct
  * Constraints: No cheerio, No async/await, var only, skipSizeCheck on all fetch
+ * QuickJS Fixes: Optional setTimeout, plain-object headers, URL polyfill, safe regex
  */
 
 var PROVIDER_NAME = "4KHDHub";
@@ -31,15 +31,56 @@ var cachedDomain = null;
 var domainCacheTime = 0;
 var DOMAIN_CACHE_TTL = 30 * 60 * 1000;
 
-// ===== TIMEOUT WRAPPER =====
+// ===== QUICKJS COMPATIBILITY HELPERS =====
+
+function hasSetTimeout() {
+  return typeof setTimeout === "function";
+}
 
 function withTimeout(promise, ms) {
+  if (!hasSetTimeout()) return promise;
   return Promise.race([
     promise,
     new Promise(function(_, reject) {
       setTimeout(function() { reject(new Error("TIMEOUT")); }, ms);
     })
   ]);
+}
+
+function getHeader(res, name) {
+  var headers = res.headers;
+  if (!headers) return "";
+  if (typeof headers.get === "function") {
+    return headers.get(name) || "";
+  }
+  if (typeof headers.get === "function") {
+    try { return headers.get(name) || ""; } catch(e) {}
+  }
+  if (headers[name]) return String(headers[name]);
+  var lowerName = name.toLowerCase();
+  if (headers[lowerName]) return String(headers[lowerName]);
+  return "";
+}
+
+function safeUrlParse(url, base) {
+  if (!url) return "";
+  if (url.indexOf("http://") === 0 || url.indexOf("https://") === 0) return url;
+  if (url.indexOf("//") === 0) return "https:" + url;
+  if (!base) return url;
+  try {
+    if (typeof URL !== "undefined") {
+      return new URL(url, base).toString();
+    }
+  } catch (e) {}
+  // Manual URL resolution fallback
+  if (url.indexOf("/") === 0) {
+    var baseProto = base.indexOf("https://") === 0 ? "https://" : "http://";
+    var baseRest = base.substring(baseProto.length);
+    var baseHost = baseRest.split("/")[0];
+    return baseProto + baseHost + url;
+  }
+  var basePath = base.substring(0, base.lastIndexOf("/") + 1);
+  return basePath + url;
 }
 
 // ===== UTILITY FUNCTIONS =====
@@ -94,15 +135,7 @@ function fetchResponse(url, options) {
 }
 
 function fixUrl(url, baseUrl) {
-  if (!url) return "";
-  if (url.indexOf("http://") === 0 || url.indexOf("https://") === 0) return url;
-  if (url.indexOf("//") === 0) return "https:" + url;
-  if (!baseUrl) return url;
-  try {
-    return new URL(url, baseUrl).toString();
-  } catch (e) {
-    return url;
-  }
+  return safeUrlParse(url, baseUrl);
 }
 
 function normalizeTitle(value) {
@@ -458,7 +491,13 @@ function searchContent(query, year, mediaType) {
         }
         if (skip) continue;
         try {
-          if (new URL(href).hostname !== new URL(domain).hostname) continue;
+          if (typeof URL !== "undefined") {
+            if (new URL(href).hostname !== new URL(domain).hostname) continue;
+          } else {
+            var hrefHost = href.replace(/^https?:\/\//, "").split("/")[0];
+            var domainHost = domain.replace(/^https?:\/\//, "").split("/")[0];
+            if (hrefHost !== domainHost) continue;
+          }
         } catch(e) { continue; }
         var title = extractBestTitle(anchor.block);
         if (!title || title.length < 2) continue;
@@ -501,7 +540,6 @@ function extractMovieLinks(html, pageUrl) {
   var pos = 0;
   var blockCount = 0;
 
-  // Primary: look for download-item blocks
   while (true) {
     var start = html.indexOf('class="download-item"', pos);
     if (start === -1) {
@@ -528,11 +566,10 @@ function extractMovieLinks(html, pageUrl) {
       }
     }
     pos = start + 20;
-    if (blockCount > 50) break; // safety cap
+    if (blockCount > 50) break;
   }
   console.log("[4KHDHub] Movie: found " + blockCount + " download-item blocks");
 
-  // Fallback 1: scan common download containers
   if (!links.length) {
     var containers = [
       'class="download-links"', 'class="gdlink"', 'class="dllinks"',
@@ -565,7 +602,6 @@ function extractMovieLinks(html, pageUrl) {
     console.log("[4KHDHub] Movie: fallback 1 found " + links.length + " links");
   }
 
-  // Fallback 2: scan all <a> tags in page for hoster links
   if (!links.length) {
     var allRegex = /<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
     var allMatch;
@@ -693,10 +729,33 @@ function extractEpisodeLinks(html, pageUrl, season, episode) {
 function resolveGadgetsweb(url) {
   return withTimeout(fetchText(url), 15000).then(function(html) {
     var combined = "";
-    var regex = /s\('o','([A-Za-z0-9+/=]+)'\)|ck\('_wp_http_\d+','([^']+)'\)/g;
-    var match;
-    while ((match = regex.exec(html)) !== null) {
-      combined += match[1] || match[2] || "";
+    // Safe regex extraction without global flag issues
+    var pos = 0;
+    while (true) {
+      var sMatch = html.indexOf("s('o','", pos);
+      if (sMatch === -1) break;
+      var endQuote = html.indexOf("')", sMatch + 6);
+      if (endQuote === -1) break;
+      var encoded = html.substring(sMatch + 6, endQuote);
+      if (encoded && /^[A-Za-z0-9+/=]+$/.test(encoded)) {
+        combined += encoded;
+      }
+      pos = endQuote + 2;
+    }
+    if (!combined) {
+      // Try ck pattern
+      pos = 0;
+      while (true) {
+        var ckMatch = html.indexOf("ck('_wp_http_", pos);
+        if (ckMatch === -1) break;
+        var quoteStart = html.indexOf("','", ckMatch);
+        if (quoteStart === -1) break;
+        var quoteEnd = html.indexOf("')", quoteStart + 3);
+        if (quoteEnd === -1) break;
+        var ckEncoded = html.substring(quoteStart + 3, quoteEnd);
+        if (ckEncoded) combined += ckEncoded;
+        pos = quoteEnd + 2;
+      }
     }
     if (!combined) return "";
     try {
@@ -749,7 +808,7 @@ function buildStream(label, url, quality, headers, size, tech, langHint, meta) {
   };
 }
 
-// ===== RESOLVERS (all wrapped with timeout) =====
+// ===== RESOLVERS =====
 
 function resolveHubcdn(url, label, quality, size, tech, langHint, meta) {
   return withTimeout(fetchText(url, { headers: { Referer: url } }), 20000).then(function(html) {
@@ -765,7 +824,6 @@ function resolveHubcdn(url, label, quality, size, tech, langHint, meta) {
     if (!finalUrl || finalUrl === encoded) return [];
     return [buildStream(label + " HUBCDN", finalUrl, quality, { Referer: url }, size, tech, langHint, meta)];
   }).catch(function(e) {
-    console.log("[4KHDHub] HubCDN timeout/error:", e.message || e);
     return [];
   });
 }
@@ -773,14 +831,12 @@ function resolveHubcdn(url, label, quality, size, tech, langHint, meta) {
 function resolveHubdrive(url, label, quality, meta) {
   var lower = String(url || "").toLowerCase();
   if (lower.indexOf("hubdrive.space") !== -1) {
-    console.log("[4KHDHub] HubDrive.space requires login - skipping");
     return Promise.resolve([]);
   }
   return withTimeout(fetchText(url, { headers: { Referer: url } }), 20000).then(function(html) {
     if (html.indexOf("Sign in - Google") !== -1 || 
         html.indexOf("accounts.google.com/signin") !== -1 ||
         html.indexOf("accounts.google.com") !== -1) {
-      console.log("[4KHDHub] Google login wall on HubDrive");
       return [];
     }
     var titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
@@ -788,7 +844,6 @@ function resolveHubdrive(url, label, quality, meta) {
     if (/hubdrive.*G-Drive File Sharing/i.test(title) &&
         html.indexOf("logout") !== -1 &&
         html.indexOf("download") === -1) {
-      console.log("[4KHDHub] HubDrive login redirect");
       return [];
     }
     var candidates = [];
@@ -830,7 +885,6 @@ function resolveHubdrive(url, label, quality, meta) {
     }
     return resolveLink(best, label, url, quality, "", meta, 0);
   }).catch(function(e) {
-    console.log("[4KHDHub] HubDrive timeout/error:", e.message || e);
     return [];
   });
 }
@@ -839,16 +893,12 @@ function resolve10Gbps(url, label, quality, size, tech, langHint, meta) {
   function step(current, depth) {
     if (depth >= 6) return Promise.resolve([]);
     return withTimeout(fetchResponse(current, {
-      redirect: "manual",
+      redirect: "follow",
       headers: { Referer: current },
       skipSizeCheck: true
     }), 15000).then(function(res) {
       var finalUrl = res.url || current;
-      var contentType = String(res.headers.get("content-type") || "").toLowerCase();
-      var location = res.headers.get("location") || "";
-      if (location) {
-        return step(fixUrl(location, current), depth + 1);
-      }
+      var contentType = getHeader(res, "content-type").toLowerCase();
       if (isPlayableUrl(finalUrl) || contentType.indexOf("video/") !== -1) {
         return [buildStream(label + " 10Gbps", finalUrl, quality, { Referer: current }, size, tech, langHint, meta)];
       }
@@ -882,7 +932,6 @@ function resolveHubcloud(url, label, referer, quality, langHint, meta) {
     }
     entryUrl = fixUrl(entryUrl, url);
     if (!entryUrl) {
-      console.log("[4KHDHub] HubCloud: no entry URL found");
       return [];
     }
 
@@ -908,10 +957,10 @@ function resolveHubcloud(url, label, referer, quality, langHint, meta) {
           asyncTasks.push(
             withTimeout(fetchResponse(link + "/download", { 
               headers: { Referer: link }, 
-              redirect: "manual",
+              redirect: "follow",
               skipSizeCheck: true 
             }), 15000).then(function(res) {
-              var redir = res.headers.get("location");
+              var redir = getHeader(res, "location");
               return redir ? [buildStream(label + " Buzz", redir, finalQuality, { Referer: link }, size, tech, langHint, meta)] : [];
             }).catch(function() { return []; })
           );
@@ -942,7 +991,6 @@ function resolveHubcloud(url, label, referer, quality, langHint, meta) {
       });
     });
   }).catch(function(e) {
-    console.log("[4KHDHub] HubCloud timeout/error:", e.message || e);
     return [];
   });
 }
@@ -950,17 +998,17 @@ function resolveHubcloud(url, label, referer, quality, langHint, meta) {
 function resolveGamerxyt(url, label, quality, langHint, meta) {
   return withTimeout(fetch(url, {
     method: "POST",
-    redirect: "manual",
+    redirect: "follow",
     headers: merge(HEADERS, {
       "Content-Type": "application/x-www-form-urlencoded",
       "Referer": url
     }),
     skipSizeCheck: true
   }), 20000).then(function(res) {
-    var location = res.headers.get("location") || "";
+    var location = getHeader(res, "location");
     if (location) {
-      return withTimeout(fetchResponse(location, { redirect: "manual", headers: { Referer: url }, skipSizeCheck: true }), 15000).then(function(r2) {
-        var loc2 = r2.headers.get("location") || "";
+      return withTimeout(fetchResponse(location, { redirect: "follow", headers: { Referer: url }, skipSizeCheck: true }), 15000).then(function(r2) {
+        var loc2 = getHeader(r2, "location");
         if (loc2) return loc2;
         return r2.url || location;
       }).catch(function() {
@@ -974,7 +1022,6 @@ function resolveGamerxyt(url, label, quality, langHint, meta) {
     }
     return [];
   }).catch(function(e) {
-    console.log("[4KHDHub] gamerxyt timeout/error:", e.message || e);
     return [];
   });
 }
@@ -1007,7 +1054,6 @@ function resolveLink(rawUrl, label, referer, quality, langHint, meta, depth) {
 
   return resolveGadgetsweb(rawUrl).then(function(resolved) {
     if (resolved) {
-      console.log("[4KHDHub] Resolved redirect:", rawUrl, "->", resolved);
       return resolveLink(resolved, label, referer, quality, langHint, meta, depth + 1);
     }
     return withTimeout(fetchResponse(rawUrl, { redirect: "follow", headers: { Referer: referer }, skipSizeCheck: true }), 15000).then(function(res) {
@@ -1023,7 +1069,7 @@ function resolveLink(rawUrl, label, referer, quality, langHint, meta, depth) {
 // ===== BATCH PROCESSING =====
 
 function resolveLinksInBatches(links, contentUrl, meta) {
-  var maxConcurrent = 4;
+  var maxConcurrent = 3;
   var allStreams = [];
 
   function processBatch(startIdx) {
@@ -1031,14 +1077,12 @@ function resolveLinksInBatches(links, contentUrl, meta) {
       return Promise.resolve(allStreams);
     }
     var batch = links.slice(startIdx, startIdx + maxConcurrent);
-    console.log("[4KHDHub] Processing batch " + (Math.floor(startIdx / maxConcurrent) + 1) + "/" + Math.ceil(links.length / maxConcurrent));
 
     var batchPromises = batch.map(function(item) {
       var quality = parseQuality((item.fileTitle || "") + " " + (item.qualityText || "") + " " + (item.label || "") + " " + (item.rawHtml || ""));
       var label = cleanLabel(item.fileTitle || item.label || PROVIDER_NAME);
       var langHint = (item.fileTitle || "") + " " + (item.label || "") + " " + (item.rawHtml || "");
-      return withTimeout(resolveLink(item.url, label, contentUrl, quality, langHint, meta, 0), 45000).catch(function(e) {
-        console.log("[4KHDHub] resolveLink failed/timeout:", item.url.substring(0, 60), e.message || e);
+      return withTimeout(resolveLink(item.url, label, contentUrl, quality, langHint, meta, 0), 60000).catch(function(e) {
         return [];
       });
     });
