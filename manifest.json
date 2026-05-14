@@ -61,7 +61,7 @@
       "version": "4.0.0",
       "author": "Enhanced",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/pinoymovieshub.js",
+      "filename": "providers/pinoyhub.js",
       "enabled": true,
       "formats": ["mp4", "m3u8", "webm"],
       "logo": "https://www.google.com/s2/favicons?domain=pinoymovieshub.win&sz=128",
