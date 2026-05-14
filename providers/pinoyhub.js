@@ -1,6 +1,7 @@
 // PinoyMoviesHub Plugin for Nuvio/QuickJS
-// Routes bysesayeveum through RDP proxy (194.233.72.38:3128)
-// Other embeds fall back to WebView (notWebReady: true)
+// Proxy: http://194.233.72.38:3128
+// Bysesayeveum -> /proxy?u= (Selenium extraction + m3u8 rewrite)
+// Others -> embed WebView (notWebReady: true)
 
 var TMDB_KEY = "6dc830f9624b43261325bed3bf7d0dfa";
 var PINOY_BASE = "https://pinoymovieshub.win";
@@ -92,7 +93,7 @@ function searchPinoyHub(title, year, isTv) {
             return tryDirectSlug(title, year, isTv);
         }
 
-        console.log("[PinoyMoviesHub] Best match: " + best.title.rendered + " -> " + best.link + " (Score: " + bestScore + ")");
+        console.log("[PinoyMoviesHub] Best match: " + best.title.rendered + " (Score: " + bestScore + ")");
         return best;
     }).catch(function() {
         return tryDirectSlug(title, year, isTv);
@@ -116,7 +117,7 @@ function tryDirectSlug(title, year, isTv) {
         var url = PINOY_BASE + paths[index];
         return fetchText(url).then(function(html) {
             if (html.indexOf('data-post="') >= 0 || html.indexOf('data-type="') >= 0) {
-                console.log("[PinoyMoviesHub] Direct slug found valid page: " + url);
+                console.log("[PinoyMoviesHub] Direct slug hit: " + url);
                 return { link: url, title: { rendered: title } };
             }
             return tryPath(index + 1);
@@ -203,7 +204,7 @@ function extractEpisodeSlug(html, season, episode) {
 }
 
 function getStreams(tmdbId, season, episode) {
-    console.log("[PinoyMoviesHub] getStreams called: " + tmdbId + " S" + season + "E" + episode);
+    console.log("[PinoyMoviesHub] getStreams: " + tmdbId + " S" + season + "E" + episode);
 
     var mediaType = null;
     var actualSeason = season;
@@ -213,18 +214,18 @@ function getStreams(tmdbId, season, episode) {
         mediaType = season;
         actualSeason = episode;
         actualEpisode = arguments[3];
-        console.log("[PinoyMoviesHub] Old Nuvio signature detected, remapped");
+        console.log("[PinoyMoviesHub] Old 4-arg signature detected");
     }
 
     var forceTv = false;
     if (actualSeason && actualEpisode && actualSeason !== "movie") {
         forceTv = true;
-        console.log("[PinoyMoviesHub] Forced TV mode, fetching TMDB TV: " + tmdbId);
+        console.log("[PinoyMoviesHub] Forced TV mode");
     }
 
     return getTmdbInfoAuto(tmdbId, forceTv).then(function(tmdbInfo) {
         if (!tmdbInfo || !tmdbInfo.data) {
-            console.log("[PinoyMoviesHub] No TMDB info found");
+            console.log("[PinoyMoviesHub] No TMDB info");
             return [];
         }
 
@@ -237,7 +238,7 @@ function getStreams(tmdbId, season, episode) {
 
         return searchPinoyHub(title, year, isTv).then(function(post) {
             if (!post) {
-                console.log("[PinoyMoviesHub] No PinoyHub match found");
+                console.log("[PinoyMoviesHub] No PinoyHub match");
                 return [];
             }
 
@@ -245,7 +246,7 @@ function getStreams(tmdbId, season, episode) {
             return fetchText(pageUrl).then(function(html) {
                 var playerData = extractPlayerData(html);
                 if (!playerData) {
-                    console.log("[PinoyMoviesHub] No player data found");
+                    console.log("[PinoyMoviesHub] No player data");
                     return [];
                 }
 
@@ -275,7 +276,7 @@ function getStreams(tmdbId, season, episode) {
 function resolveAndBuild(playerData, title, season, episode, isTv) {
     return callDooPlayerAPI(playerData.postId, playerData.type, playerData.source).then(function(embedUrl) {
         if (!embedUrl) {
-            console.log("[PinoyMoviesHub] No embed URL from API");
+            console.log("[PinoyMoviesHub] No embed from API");
             return [];
         }
 
@@ -322,7 +323,6 @@ function resolveAndBuild(playerData, title, season, episode, isTv) {
     });
 }
 
-// Exports for Nuvio
 if (typeof module !== "undefined") {
     module.exports = { getStreams: getStreams };
 }
