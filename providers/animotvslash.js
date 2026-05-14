@@ -149,9 +149,6 @@ async function getPostId(pageHtml, slug) {
   return null;
 }
 
-// ------------------------------------------------------------------
-// ANIME ID extraction
-// ------------------------------------------------------------------
 function extractAnimeId(html, postId) {
   const embedMatch = html.match(/tryembed\.us\.cc\/embed\/anime\/(\d+)/);
   if (embedMatch) return embedMatch[1];
@@ -176,9 +173,6 @@ function extractAnimeId(html, postId) {
   return null;
 }
 
-// ------------------------------------------------------------------
-// EMBED URL extraction
-// ------------------------------------------------------------------
 async function getEmbedUrl(postId, pageHtml, episodeNum) {
   const htmlEmbed = scrapeEmbedFromHtml(pageHtml);
   if (htmlEmbed) {
@@ -271,42 +265,22 @@ async function tryAdminAjax(postId, action, episodeNum) {
 }
 
 // ------------------------------------------------------------------
-// TOKEN TO STREAM URL — The critical fix
+// TOKEN TO STREAM URL — Fixed: skip HEAD, use GET directly
 // ------------------------------------------------------------------
 
 /**
  * Converts a provider token to a signed m3u8 URL
- * Pattern: https://tryembed.us.cc/s/{token}.m3u8
- * Then follows 302 redirect to get proxied URL
+ * Skips HEAD request (causes 429 rate limits)
+ * Uses GET with redirect follow directly
  */
 async function resolveToken(token, embedUrl) {
   const signedUrl = `https://tryembed.us.cc/s/${token}.m3u8`;
-  console.log(`[animotvslash] [token] Signed URL: ${signedUrl.substring(0, 100)}...`);
+  console.log(`[animotvslash] [token] Resolving: ${signedUrl.substring(0, 80)}...`);
 
   try {
-    // Try HEAD with manual redirect first
-    const headRes = await fetchWithCookies(signedUrl, {
-      method: 'HEAD',
-      headers: {
-        ...EMBED_HEADERS,
-        'Referer': embedUrl,
-      },
-      redirect: 'manual',
-    });
-
-    console.log(`[animotvslash] [token] HEAD status: ${headRes.status}`);
-
-    if (headRes.status === 302 || headRes.status === 301) {
-      const location = headRes.headers.get('location') || headRes.headers.get('Location');
-      if (location) {
-        console.log(`[animotvslash] [token] 302 -> ${location.substring(0, 100)}...`);
-        return location;
-      }
-    }
-
-    // If no 302, try GET with follow
-    console.log(`[animotvslash] [token] No 302, trying GET follow`);
+    // Skip HEAD — go straight to GET to avoid 429
     const getRes = await fetchWithCookies(signedUrl, {
+      method: 'GET',
       headers: {
         ...EMBED_HEADERS,
         'Referer': embedUrl,
@@ -314,8 +288,15 @@ async function resolveToken(token, embedUrl) {
       redirect: 'follow',
     });
 
-    console.log(`[animotvslash] [token] Final URL: ${getRes.url.substring(0, 100)}...`);
-    return getRes.url;
+    console.log(`[animotvslash] [token] GET status: ${getRes.status}`);
+
+    if (getRes.ok) {
+      console.log(`[animotvslash] [token] Final URL: ${getRes.url.substring(0, 100)}...`);
+      return getRes.url;
+    }
+
+    console.log(`[animotvslash] [token] GET failed: ${getRes.status}`);
+    return null;
 
   } catch (err) {
     console.error(`[animotvslash] [token] Error: ${err.message}`);
@@ -324,7 +305,7 @@ async function resolveToken(token, embedUrl) {
 }
 
 // ------------------------------------------------------------------
-// STREAM DATA API — with correct providers parsing
+// STREAM DATA API
 // ------------------------------------------------------------------
 async function extractTryEmbed(embedUrl) {
   console.log(`[animotvslash] [tryembed] Extracting: ${embedUrl}`);
@@ -353,7 +334,6 @@ async function extractTryEmbed(embedUrl) {
 
   console.log(`[animotvslash] [tryembed] API keys: ${Object.keys(streamData).join(', ')}`);
 
-  // Handle providers array
   const providers = streamData.providers || streamData.sources || streamData.streams;
 
   if (providers && Array.isArray(providers) && providers.length > 0) {
@@ -368,7 +348,6 @@ async function extractTryEmbed(embedUrl) {
 
       console.log(`[animotvslash] [tryembed] Provider ${i}: ${providerName} (type=${providerType})`);
 
-      // Get qualities array
       const qualities = provider.qualities || provider.sources || [{ name: 'Auto', token: provider.token || provider.url }];
 
       if (!qualities || !Array.isArray(qualities)) {
@@ -411,37 +390,25 @@ async function extractTryEmbed(embedUrl) {
     return results;
   }
 
-  // Fallback: single url field (old API format)
+  // Fallback: single url field
   const signedUrl = streamData.url || streamData.source || streamData.stream || streamData.m3u8;
   if (signedUrl) {
     console.log(`[animotvslash] [tryembed] Single URL: ${signedUrl.substring(0, 80)}...`);
 
     try {
-      const headRes = await fetchWithCookies(signedUrl, {
-        method: 'HEAD',
+      const getRes = await fetchWithCookies(signedUrl, {
+        method: 'GET',
         headers: {
           ...EMBED_HEADERS,
           'Referer': embedUrl,
         },
-        redirect: 'manual',
+        redirect: 'follow',
       });
 
-      let finalUrl = signedUrl;
-      if (headRes.status === 302 || headRes.status === 301) {
-        const location = headRes.headers.get('location') || headRes.headers.get('Location');
-        if (location) finalUrl = location;
-      } else {
-        const getRes = await fetchWithCookies(signedUrl, {
-          headers: {
-            ...EMBED_HEADERS,
-            'Referer': embedUrl,
-          },
-          redirect: 'follow',
-        });
-        finalUrl = getRes.url;
+      if (getRes.ok) {
+        return [{ url: getRes.url, name: 'Auto', type: 'hls' }];
       }
-
-      return [{ url: finalUrl, name: 'Auto', type: 'hls' }];
+      return [];
     } catch (err) {
       console.error(`[animotvslash] [tryembed] redirect error: ${err.message}`);
       return [];
@@ -576,7 +543,6 @@ async function getStreams(tmdbId, season, episode) {
                 }
             }
 
-            // Always add WebView fallback
             streams.push({
                 name: `ANIMOTVSLASH - WebView`,
                 title: mediaType === 'tv' ? `S${seasonNum}E${episodeNum}` : 'Movie',
