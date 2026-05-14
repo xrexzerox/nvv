@@ -538,13 +538,16 @@ function searchContent(query, year, mediaType) {
         }
         if (isNav) continue;
         var combinedText = (title + " " + href).toLowerCase();
-        var isSeries = /\bseries\b/i.test(title) || /-series-?\d*/i.test(href) || /\/series\//i.test(href) || /\bseason\s*\d+\b/i.test(combinedText);
+        var isSeries = /\bseries\b/i.test(title) || /-series-?\d*/i.test(href) || /\/series\//i.test(href) || /\bseason\s*\d+\b/i.test(combinedText) || /\bepisode\b/i.test(combinedText);
+        // For movies, skip results that look like series
         if (mediaType === "movie" && isSeries) continue;
-        if (mediaType !== "movie" && !isSeries) continue;
+        // For TV: if result looks like series, boost score. Don't strictly filter out non-series
+        // because many TV shows don't have "series" in their URL/title on 4KHDHub.
+        var seriesBoost = (mediaType !== "movie" && isSeries) ? 300 : 0;
         var cleanedTitle = title.replace(/\[.*?\[\]()\]/g, "").replace(/\s+details$/i, "").trim();
         var yearMatch = combinedText.match(/\b(19|20)\d{2}\b/);
         var itemYear = yearMatch ? parseInt(yearMatch[0], 10) : 0;
-        var score = similarityScore(query, cleanedTitle);
+        var score = similarityScore(query, cleanedTitle) + seriesBoost;
         if (year && itemYear && Math.abs(itemYear - year) > 1) score -= 500;
         console.log("[4KHDHub] Result " + (i + 1) + " : " + cleanedTitle + " - Score: " + score);
         results.push({ href: href, title: cleanedTitle, score: score });
@@ -678,6 +681,8 @@ function extractEpisodeLinks(html, pageUrl, season, episode) {
     var seasonHtml = html.substring(seasonStart, seasonEnd);
 
     var seasonNumMatch = seasonHtml.match(/class="episode-number"[^>]*>([^<]+)/);
+    if (!seasonNumMatch) seasonNumMatch = seasonHtml.match(/class="season-number"[^>]*>([^<]+)/);
+    if (!seasonNumMatch) seasonNumMatch = seasonHtml.match(/class="season-label"[^>]*>([^<]+)/);
     var seasonNumText = seasonNumMatch ? seasonNumMatch[1].trim() : "";
     var seasonNumExtracted = 0;
     var snMatch = seasonNumText.match(/S(?:eason)?\s*([0-9]+)/i);
@@ -685,6 +690,11 @@ function extractEpisodeLinks(html, pageUrl, season, episode) {
     else if (seasonNumText.indexOf("S") === 0) {
       var snNum = parseInt(seasonNumText.substring(1), 10);
       if (!isNaN(snNum)) seasonNumExtracted = snNum;
+    }
+    // Fallback: try to extract season number from any text in the season block
+    if (!seasonNumExtracted) {
+      var seasonFallback = seasonHtml.match(/\bSeason\s*([0-9]+)\b/i);
+      if (seasonFallback) seasonNumExtracted = parseInt(seasonFallback[1], 10);
     }
 
     if (seasonNumExtracted === sNum) {
@@ -709,13 +719,15 @@ function extractEpisodeLinks(html, pageUrl, season, episode) {
         var itemText = itemHtml.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
         var epRegexMatch = itemText.match(/Episode-?\s*0*([0-9]+)/i) || itemText.match(/\bE\s*0*([0-9]+)/i);
 
-        var isMatch = fileTitle.indexOf(epPattern1) !== -1 ||
-                      fileTitle.indexOf(epPattern2) !== -1 ||
-                      fileTitle.indexOf(epPattern3) !== -1 ||
-                      fileTitle.indexOf(epPattern4) !== -1 ||
-                      badgeText.indexOf(epPattern2) !== -1 ||
-                      badgeText.indexOf(epPattern3) !== -1 ||
-                      badgeText.indexOf(epPattern4) !== -1 ||
+        var ftLower = fileTitle.toLowerCase();
+        var btLower = badgeText.toLowerCase();
+        var isMatch = ftLower.indexOf(epPattern1.toLowerCase()) !== -1 ||
+                      ftLower.indexOf(epPattern2.toLowerCase()) !== -1 ||
+                      ftLower.indexOf(epPattern3.toLowerCase()) !== -1 ||
+                      ftLower.indexOf(epPattern4.toLowerCase()) !== -1 ||
+                      btLower.indexOf(epPattern2.toLowerCase()) !== -1 ||
+                      btLower.indexOf(epPattern3.toLowerCase()) !== -1 ||
+                      btLower.indexOf(epPattern4.toLowerCase()) !== -1 ||
                       (epRegexMatch && parseInt(epRegexMatch[1], 10) === eNum);
 
         if (isMatch) {
@@ -751,6 +763,7 @@ function extractEpisodeLinks(html, pageUrl, season, episode) {
     if (seasonCount > 20) break;
   }
 
+  console.log("[4KHDHub] Episode extraction: found " + found.length + " links for S" + season + "E" + episode);
   return uniqueBy(found, function(item) { return String(item.url || "").toLowerCase(); });
 }
 
@@ -1141,6 +1154,15 @@ function extractFromPage(contentUrl, mediaType, season, episode, meta) {
       : extractEpisodeLinks(html, contentUrl, season, episode);
 
     console.log("[4KHDHub] Found " + links.length + " raw links for " + (mediaType === "movie" ? "movie" : "S" + season + "E" + episode));
+
+    // TV fallback: if no episode links found, try movie-style extraction
+    // Some TV pages on 4KHDHub use movie-style download blocks instead of episode lists
+    if (!links.length && mediaType !== "movie" && !isMoviePage) {
+      console.log("[4KHDHub] TV episode links not found, trying movie-style extraction as fallback");
+      links = extractMovieLinks(html, contentUrl);
+      console.log("[4KHDHub] Fallback found " + links.length + " links");
+    }
+
     if (!links.length) {
       console.log("[4KHDHub] No download links found on page");
       return [];
