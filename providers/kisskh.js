@@ -356,6 +356,16 @@ function sourcesToStreams(sources, dramaTitle, epTitle, epNumber) {
 // ===== ENTRY POINT (same signature as 4KHDHub) =====
 
 function getStreams(tmdbId, season, episode) {
+    // Backward compatibility: old signature was getStreams(tmdbId, mediaType, seasonNum, episodeNum)
+    // Nuvio may still call with 4 args. Detect and remap.
+    var mediaType = null;
+    if (season === "movie" || season === "tv") {
+        mediaType = season;
+        season = episode;
+        episode = arguments[3];
+        log("Detected old signature (mediaType=" + mediaType + "), remapped to season=" + season + " episode=" + episode);
+    }
+
     var seasonStr = season || "";
     var episodeStr = episode || "";
     log("getStreams called: " + tmdbId + " S" + seasonStr + "E" + episodeStr);
