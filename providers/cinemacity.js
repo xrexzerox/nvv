@@ -202,11 +202,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
           console.log("[CinemaCity] Processing file string, length:", str.length);
 
           if (str.indexOf(".urlset/master.m3u8") !== -1) {
-            // This is a PlayerJS multi-file format string.
-            // The CDN endpoint .urlset/master.m3u8?action=download&video=...&audio=... 
-            // dynamically generates a proper HLS master playlist with video+audio+subs combined.
-            // The individual MP4s in the string are separate tracks (not standalone playable videos).
-            // Only the HLS master URL works correctly.
+            // PlayerJS multi-file format: the CDN endpoint .urlset/master.m3u8
+            // dynamically generates an HLS master playlist combining video+audio+subs.
+            // The individual MP4s in the string are demuxed tracks (video-only, no audio).
+            // Only the HLS master URL produces a properly playable stream.
             addStream(str, title, "Auto");
             console.log("[CinemaCity] Added HLS Auto stream");
           } else if (str.indexOf("[") !== -1) {
