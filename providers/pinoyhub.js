@@ -1,6 +1,5 @@
 // providers/pinoyhub.js
-// PinoyMoviesHub - Proxy Edition
-// All bysesayeveum embeds route through RDP proxy for extraction
+// PinoyMoviesHub - Bysesayeveum Proxy Only
 
 var cheerio = require("cheerio-without-node-native");
 
@@ -8,7 +7,7 @@ var PROVIDER_NAME = "PinoyMoviesHub";
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var BASE_URL = "https://pinoymovieshub.win";
 
-// RDP Proxy Server - handles extraction + CDN proxying
+// RDP Proxy Server - ONLY for bysesayeveum SprintCDN extraction
 var PROXY_HOST = "194.233.72.38";
 var PROXY_PORT = "3128";
 var PROXY_BASE = "http://" + PROXY_HOST + ":" + PROXY_PORT;
@@ -163,15 +162,54 @@ function getTmdbEpisodeTitle(tmdbId, season, episode) {
     }).catch(function() { return ""; });
 }
 
-// ===== PROXY RESOLVER =====
-// All embed URLs route through RDP proxy. The proxy extracts CDN internally.
+// ===== RESOLVERS =====
 
-function getProxyUrl(embedUrl) {
-    // Route any embed URL through the proxy server
-    // Proxy handles: bysesayeveum, playmogo, mixdrop, etc.
-    var proxyUrl = PROXY_BASE + "/proxy?u=" + encodeURIComponent(embedUrl);
-    log("Proxy URL: " + proxyUrl.substring(0, 80));
-    return proxyUrl;
+function resolveBysesayeveum(embedUrl) {
+    // ONLY bysesayeveum goes through RDP proxy
+    // Proxy extracts SprintCDN m3u8 via Selenium
+    var proxyUrl = embedUrl;
+    if (proxyUrl.indexOf("/e/") !== -1) {
+        proxyUrl = proxyUrl.replace("/e/", "/d/");
+    }
+    var finalUrl = PROXY_BASE + "/proxy?u=" + encodeURIComponent(proxyUrl);
+    log("Bysesayeveum -> Proxy: " + finalUrl.substring(0, 80));
+    return finalUrl;
+}
+
+function resolvePlaymogo(embedUrl) {
+    // playmogo stays as embed (notWebReady: true)
+    log("Playmogo -> Embed (WebView)");
+    return embedUrl;
+}
+
+function resolveMixdrop(embedUrl) {
+    // mixdrop stays as embed (notWebReady: true)
+    log("Mixdrop -> Embed (WebView)");
+    return embedUrl;
+}
+
+function resolveEmbed(embedUrl) {
+    return new Promise(function(resolve) {
+        var host = "";
+        try {
+            if (typeof URL !== "undefined") {
+                host = new URL(embedUrl).hostname.toLowerCase();
+            }
+        } catch(e) {}
+        log("Resolving embed host: " + host);
+
+        if (host.indexOf("bysesayeveum") !== -1) {
+            resolve(resolveBysesayeveum(embedUrl));
+        } else if (host.indexOf("playmogo") !== -1) {
+            resolve(resolvePlaymogo(embedUrl));
+        } else if (host.indexOf("mixdrop") !== -1 || host.indexOf("m1xdrop") !== -1) {
+            resolve(resolveMixdrop(embedUrl));
+        } else {
+            // Unknown host - return as embed
+            log("Unknown host -> Embed (WebView)");
+            resolve(embedUrl);
+        }
+    });
 }
 
 // ===== DOOPLAYER API =====
@@ -254,8 +292,8 @@ function callDooPlayerAPI(playerData) {
         }
         log("Dooplayer embed URL: " + embedUrl);
 
-        // Route through proxy - proxy extracts CDN internally
-        return getProxyUrl(embedUrl);
+        // Route through appropriate resolver
+        return resolveEmbed(embedUrl);
     }).catch(function(e) {
         log("Dooplayer API error: " + e.message);
         return null;
@@ -270,8 +308,9 @@ function buildStream(name, url, quality, language, displayTitle, meta) {
     var host = "";
     try { host = new URL(url).hostname.replace(/^www\./, "").replace(/\.com$/, "").replace(/\.top$/, "").replace(/\.click$/, ""); } catch(e) {}
 
-    // Proxy URLs are direct video streams (not embeds)
-    var isProxy = url.indexOf("/proxy?u=") !== -1;
+    // Check if this is a proxy stream (bysesayeveum through RDP)
+    var isProxy = url.indexOf("/proxy?u=") !== -1 && url.indexOf("bysesayeveum") !== -1;
+    // Check if embed (playmogo, mixdrop, or unknown)
     var isEmbed = !isProxy && !/\.(m3u8|mp4|mkv|webm|avi|mov)(\?|#|$)/i.test(url);
     var q = isEmbed ? "Browser" : (isProxy ? "Auto" : parseQuality(quality + " " + language));
 
@@ -297,12 +336,12 @@ function buildStream(name, url, quality, language, displayTitle, meta) {
         headers: { Referer: BASE_URL },
         provider: "pinoymovieshub",
         behaviorHints: {
-            bingeGroup: "pinoymovieshub-" + (isEmbed ? "embed" : q.toLowerCase()),
+            bingeGroup: "pinoymovieshub-" + (isEmbed ? "embed" : (isProxy ? "bysesayeveum" : q.toLowerCase())),
             notWebReady: isEmbed
         }
     };
 
-    // Proxy streams need proper headers for CDN
+    // Proxy streams need proper headers for SprintCDN
     if (isProxy) {
         stream.behaviorHints.proxyHeaders = {
             request: {
@@ -377,11 +416,11 @@ function getStreams(tmdbId, season, episode) {
                 log("Using Dooplayer API approach");
 
                 return Promise.all(players.map(function(player) {
-                    return callDooPlayerAPI(player).then(function(proxyUrl) {
-                        if (!proxyUrl) return null;
+                    return callDooPlayerAPI(player).then(function(resolvedUrl) {
+                        if (!resolvedUrl) return null;
                         return buildStream(
                             PROVIDER_NAME + " - Source " + player.source,
-                            proxyUrl,
+                            resolvedUrl,
                             "Auto",
                             "",
                             displayTitle,
