@@ -1199,6 +1199,16 @@ function findContentUrl(tmdbId, mediaType, tmdbData) {
 // ===== ENTRY POINT =====
 
 function getStreams(tmdbId, season, episode) {
+  // Backward compatibility: old signature was getStreams(tmdbId, mediaType, seasonNum, episodeNum)
+  // Nuvio may still call with 4 args. Detect and remap.
+  var mediaType = null;
+  if (season === "movie" || season === "tv") {
+    mediaType = season;
+    season = episode;
+    episode = arguments[3];
+    console.log("[4KHDHub] Detected old signature (mediaType=" + mediaType + "), remapped to season=" + season + " episode=" + episode);
+  }
+
   console.log("[4KHDHub] getStreams called:", tmdbId, season, episode);
 
   // If season and episode are provided, the user explicitly wants TV.
