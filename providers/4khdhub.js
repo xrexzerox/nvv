@@ -1,8 +1,8 @@
 /**
- * 4KHDHub Nuvio Plugin - Complete Stream Edition
+ * 4KHDHub Nuvio Plugin - Complete Edition (with Timeouts)
  * Domain: 4khdhub.link
  * Supports: Movies & TV Shows
- * Resolvers: HubCloud, HubDrive, HubCDN, PixelDrain, Workers.dev, R2.dev, GDrive, Gadgetsweb Redirects, Direct
+ * Resolvers: HubCloud, HubDrive, HubCDN, PixelDrain, Workers.dev, R2.dev, GDrive, Gadgetsweb, Direct
  * Constraints: No cheerio, No async/await, var only, skipSizeCheck on all fetch
  */
 
@@ -30,6 +30,17 @@ var NAV_LABELS = ["movies", "web series", "ott", "anime", "home", "about us", "c
 var cachedDomain = null;
 var domainCacheTime = 0;
 var DOMAIN_CACHE_TTL = 30 * 60 * 1000;
+
+// ===== TIMEOUT WRAPPER =====
+
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise(function(_, reject) {
+      setTimeout(function() { reject(new Error("TIMEOUT")); }, ms);
+    })
+  ]);
+}
 
 // ===== UTILITY FUNCTIONS =====
 
@@ -488,19 +499,22 @@ function searchContent(query, year, mediaType) {
 function extractMovieLinks(html, pageUrl) {
   var links = [];
   var pos = 0;
+  var blockCount = 0;
+
+  // Primary: look for download-item blocks
   while (true) {
     var start = html.indexOf('class="download-item"', pos);
     if (start === -1) {
       var dataStart = html.indexOf("data-file-id", pos);
       if (dataStart !== -1) {
         start = html.lastIndexOf("<div", dataStart);
-        if (start === -1) start = dataStart;
+        if (start === -1 || start < pos) start = dataStart;
       }
     }
     if (start === -1) break;
     var end = html.indexOf('class="download-item"', start + 20);
     if (end === -1) end = html.indexOf('class="uploader-notes"', start);
-    if (end === -1) end = start + 5000;
+    if (end === -1) end = start + 8000;
     var block = html.substring(start, end);
     var aMatch = block.match(/<a[^>]*href="([^"]+)"[^>]*>/);
     if (aMatch) {
@@ -510,30 +524,71 @@ function extractMovieLinks(html, pageUrl) {
       var fileTitle = fileTitleMatch ? cleanLabel(fileTitleMatch[1].replace(/<[^>]+>/g, " ").trim()) : "";
       if (href) {
         links.push({ url: href, label: label, fileTitle: fileTitle, rawHtml: block });
+        blockCount++;
       }
     }
     pos = start + 20;
+    if (blockCount > 50) break; // safety cap
   }
+  console.log("[4KHDHub] Movie: found " + blockCount + " download-item blocks");
+
+  // Fallback 1: scan common download containers
   if (!links.length) {
-    var aRegex = /<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
-    var aMatch;
-    while ((aMatch = aRegex.exec(html)) !== null) {
-      var href = fixUrl(aMatch[1], pageUrl);
-      var text = aMatch[2].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    var containers = [
+      'class="download-links"', 'class="gdlink"', 'class="dllinks"',
+      'class="movie-download"', 'class="box-content"', 'class="wp-block-buttons"',
+      'class="thecontent"', 'class="entry-content"'
+    ];
+    var c, containerStart, containerEnd, containerHtml;
+    for (c = 0; c < containers.length; c++) {
+      containerStart = html.indexOf(containers[c]);
+      while (containerStart !== -1) {
+        containerEnd = html.indexOf("</div>", containerStart);
+        if (containerEnd === -1) containerEnd = containerStart + 3000;
+        containerHtml = html.substring(containerStart, containerEnd + 6);
+        var caRegex = /<a[^>]*href="([^"]+)"[^>]*>/gi;
+        var caMatch;
+        while ((caMatch = caRegex.exec(containerHtml)) !== null) {
+          var href = fixUrl(caMatch[1], pageUrl);
+          if (!href) continue;
+          var lower = href.toLowerCase();
+          var isHoster = lower.indexOf("hubcloud") !== -1 || lower.indexOf("hubdrive") !== -1 ||
+            lower.indexOf("hubcdn") !== -1 || lower.indexOf("workers.dev") !== -1 ||
+            lower.indexOf("r2.dev") !== -1 || lower.indexOf("pixeldrain") !== -1 ||
+            lower.indexOf("gamerxyt") !== -1 || /\.(mp4|mkv|m3u8)(\?|#|$)/i.test(lower);
+          if (!isHoster) continue;
+          links.push({ url: href, label: "Movie", fileTitle: "", rawHtml: containerHtml });
+        }
+        containerStart = html.indexOf(containers[c], containerStart + 10);
+      }
+    }
+    console.log("[4KHDHub] Movie: fallback 1 found " + links.length + " links");
+  }
+
+  // Fallback 2: scan all <a> tags in page for hoster links
+  if (!links.length) {
+    var allRegex = /<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+    var allMatch;
+    while ((allMatch = allRegex.exec(html)) !== null) {
+      var href = fixUrl(allMatch[1], pageUrl);
+      var text = allMatch[2].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
       var lower = href.toLowerCase();
       var isHoster = lower.indexOf("hubcloud") !== -1 || lower.indexOf("hubdrive") !== -1 ||
         lower.indexOf("hubcdn") !== -1 || lower.indexOf("workers.dev") !== -1 ||
         lower.indexOf("r2.dev") !== -1 || lower.indexOf("pixeldrain") !== -1 ||
         lower.indexOf("gamerxyt") !== -1 || /\.(mp4|mkv|m3u8)(\?|#|$)/i.test(lower);
       if (!isHoster) continue;
-      var contextStart = Math.max(0, aMatch.index - 500);
-      var context = html.substring(contextStart, aMatch.index + 200);
+      var contextStart = Math.max(0, allMatch.index - 300);
+      var context = html.substring(contextStart, allMatch.index + 200);
       var inDownload = context.indexOf("download") !== -1 || context.indexOf("Download") !== -1 ||
-                       context.indexOf('class="download') !== -1 || context.indexOf("download-item") !== -1;
+                       context.indexOf('class="download') !== -1 || context.indexOf("download-item") !== -1 ||
+                       context.indexOf("gdlink") !== -1 || context.indexOf("dllinks") !== -1;
       if (!inDownload) continue;
       links.push({ url: href, label: cleanLabel(text), fileTitle: cleanLabel(text), rawHtml: context });
     }
+    console.log("[4KHDHub] Movie: fallback 2 found " + links.length + " links");
   }
+
   return uniqueBy(links, function(item) { return String(item.url || "").toLowerCase(); });
 }
 
@@ -547,6 +602,7 @@ function extractEpisodeLinks(html, pageUrl, season, episode) {
   var found = [];
 
   var seasonPos = 0;
+  var seasonCount = 0;
   while (true) {
     var seasonStart = html.indexOf('class="season-item', seasonPos);
     if (seasonStart === -1) break;
@@ -565,66 +621,68 @@ function extractEpisodeLinks(html, pageUrl, season, episode) {
       if (!isNaN(snNum)) seasonNumExtracted = snNum;
     }
 
-    if (seasonNumExtracted !== sNum) {
-      seasonPos = seasonStart + 20;
-      continue;
-    }
+    if (seasonNumExtracted === sNum) {
+      var qualityMatch = seasonHtml.match(/class="episode-title"[^>]*>([\s\S]*?)<\/h3>/i);
+      var qualityText = qualityMatch ? qualityMatch[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() : "";
 
-    var qualityMatch = seasonHtml.match(/class="episode-title"[^>]*>([\s\S]*?)<\/h3>/i);
-    var qualityText = qualityMatch ? qualityMatch[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() : "";
+      var itemPos = 0;
+      var itemCount = 0;
+      while (true) {
+        var itemStart = seasonHtml.indexOf('class="episode-download-item"', itemPos);
+        if (itemStart === -1) break;
+        var nextItem = seasonHtml.indexOf('class="episode-download-item"', itemStart + 30);
+        var itemEnd = nextItem !== -1 ? nextItem : seasonHtml.length;
+        var itemHtml = seasonHtml.substring(itemStart, itemEnd);
 
-    var itemPos = 0;
-    while (true) {
-      var itemStart = seasonHtml.indexOf('class="episode-download-item"', itemPos);
-      if (itemStart === -1) break;
-      var nextItem = seasonHtml.indexOf('class="episode-download-item"', itemStart + 30);
-      var itemEnd = nextItem !== -1 ? nextItem : seasonHtml.length;
-      var itemHtml = seasonHtml.substring(itemStart, itemEnd);
+        var ftMatch = itemHtml.match(/class="episode-file-title"[^>]*>([\s\S]*?)<\/div>/i);
+        var fileTitle = ftMatch ? ftMatch[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() : "";
 
-      var ftMatch = itemHtml.match(/class="episode-file-title"[^>]*>([\s\S]*?)<\/div>/i);
-      var fileTitle = ftMatch ? ftMatch[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() : "";
+        var badgeMatch = itemHtml.match(/class="badge-psa"[^>]*>([^<]+)/);
+        var badgeText = badgeMatch ? badgeMatch[1].trim() : "";
 
-      var badgeMatch = itemHtml.match(/class="badge-psa"[^>]*>([^<]+)/);
-      var badgeText = badgeMatch ? badgeMatch[1].trim() : "";
+        var itemText = itemHtml.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+        var epRegexMatch = itemText.match(/Episode-?\s*0*([0-9]+)/i) || itemText.match(/\bE\s*0*([0-9]+)/i);
 
-      var itemText = itemHtml.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
-      var epRegexMatch = itemText.match(/Episode-?\s*0*([0-9]+)/i) || itemText.match(/\bE\s*0*([0-9]+)/i);
+        var isMatch = fileTitle.indexOf(epPattern1) !== -1 ||
+                      fileTitle.indexOf(epPattern2) !== -1 ||
+                      fileTitle.indexOf(epPattern3) !== -1 ||
+                      fileTitle.indexOf(epPattern4) !== -1 ||
+                      badgeText.indexOf(epPattern2) !== -1 ||
+                      badgeText.indexOf(epPattern3) !== -1 ||
+                      badgeText.indexOf(epPattern4) !== -1 ||
+                      (epRegexMatch && parseInt(epRegexMatch[1], 10) === eNum);
 
-      var isMatch = fileTitle.indexOf(epPattern1) !== -1 ||
-                    fileTitle.indexOf(epPattern2) !== -1 ||
-                    fileTitle.indexOf(epPattern3) !== -1 ||
-                    fileTitle.indexOf(epPattern4) !== -1 ||
-                    badgeText.indexOf(epPattern2) !== -1 ||
-                    badgeText.indexOf(epPattern3) !== -1 ||
-                    badgeText.indexOf(epPattern4) !== -1 ||
-                    (epRegexMatch && parseInt(epRegexMatch[1], 10) === eNum);
-
-      if (isMatch) {
-        var linksStart = itemHtml.indexOf('class="episode-links"');
-        var linksEnd = itemHtml.indexOf('</div>', linksStart);
-        if (linksStart !== -1 && linksEnd !== -1) {
-          var linksHtml = itemHtml.substring(linksStart, linksEnd + 6);
-          var aRegex = /<a[^>]*href="([^"]+)"[^>]*>/gi;
-          var aMatch;
-          while ((aMatch = aRegex.exec(linksHtml)) !== null) {
-            var href = fixUrl(aMatch[1], pageUrl);
-            if (href) {
-              found.push({
-                url: href,
-                label: "S" + sNum + "E" + eNum,
-                fileTitle: fileTitle,
-                qualityText: qualityText,
-                rawHtml: itemHtml
-              });
+        if (isMatch) {
+          var linksStart = itemHtml.indexOf('class="episode-links"');
+          var linksEnd = itemHtml.indexOf('</div>', linksStart);
+          if (linksStart !== -1 && linksEnd !== -1) {
+            var linksHtml = itemHtml.substring(linksStart, linksEnd + 6);
+            var aRegex = /<a[^>]*href="([^"]+)"[^>]*>/gi;
+            var aMatch;
+            while ((aMatch = aRegex.exec(linksHtml)) !== null) {
+              var href = fixUrl(aMatch[1], pageUrl);
+              if (href) {
+                found.push({
+                  url: href,
+                  label: "S" + sNum + "E" + eNum,
+                  fileTitle: fileTitle,
+                  qualityText: qualityText,
+                  rawHtml: itemHtml
+                });
+              }
             }
           }
         }
-      }
 
-      itemPos = itemStart + 30;
+        itemPos = itemStart + 30;
+        itemCount++;
+        if (itemCount > 100) break;
+      }
     }
 
     seasonPos = seasonStart + 20;
+    seasonCount++;
+    if (seasonCount > 20) break;
   }
 
   return uniqueBy(found, function(item) { return String(item.url || "").toLowerCase(); });
@@ -633,10 +691,9 @@ function extractEpisodeLinks(html, pageUrl, season, episode) {
 // ===== REDIRECT DECODER (Gadgetsweb) =====
 
 function resolveGadgetsweb(url) {
-  return fetchText(url).then(function(html) {
+  return withTimeout(fetchText(url), 15000).then(function(html) {
     var combined = "";
-    var regexStr = "s\\('o','([A-Za-z0-9+/=]+)'\\)|ck\\('_wp_http_\\d+','([^']+)'\\)";
-    var regex = new RegExp(regexStr, "g");
+    var regex = /s\('o','([A-Za-z0-9+/=]+)'\)|ck\('_wp_http_\d+','([^']+)'\)/g;
     var match;
     while ((match = regex.exec(html)) !== null) {
       combined += match[1] || match[2] || "";
@@ -650,7 +707,7 @@ function resolveGadgetsweb(url) {
       var data = decodeBase64(json.data || "");
       var blogUrl = json.blog_url || "";
       if (!data || !blogUrl) return "";
-      return fetchText(blogUrl + "?re=" + encodeURIComponent(data)).then(function(txt) {
+      return withTimeout(fetchText(blogUrl + "?re=" + encodeURIComponent(data)), 15000).then(function(txt) {
         var txtStr = String(txt || "").trim();
         var reurlMatch = txtStr.match(/var\s+reurl\s*=\s*"([^"]+)"/);
         if (reurlMatch) return reurlMatch[1];
@@ -692,10 +749,10 @@ function buildStream(label, url, quality, headers, size, tech, langHint, meta) {
   };
 }
 
-// ===== RESOLVERS =====
+// ===== RESOLVERS (all wrapped with timeout) =====
 
 function resolveHubcdn(url, label, quality, size, tech, langHint, meta) {
-  return fetchText(url, { headers: { Referer: url } }).then(function(html) {
+  return withTimeout(fetchText(url, { headers: { Referer: url } }), 20000).then(function(html) {
     var encoded = "";
     var match1 = html.match(/r=([A-Za-z0-9+/=]+)/);
     var match2 = html.match(/reurl\s*=\s*"([^"]+)"/);
@@ -707,7 +764,10 @@ function resolveHubcdn(url, label, quality, size, tech, langHint, meta) {
     var finalUrl = decoded.split("link=").pop();
     if (!finalUrl || finalUrl === encoded) return [];
     return [buildStream(label + " HUBCDN", finalUrl, quality, { Referer: url }, size, tech, langHint, meta)];
-  }).catch(function() { return []; });
+  }).catch(function(e) {
+    console.log("[4KHDHub] HubCDN timeout/error:", e.message || e);
+    return [];
+  });
 }
 
 function resolveHubdrive(url, label, quality, meta) {
@@ -716,7 +776,7 @@ function resolveHubdrive(url, label, quality, meta) {
     console.log("[4KHDHub] HubDrive.space requires login - skipping");
     return Promise.resolve([]);
   }
-  return fetchText(url, { headers: { Referer: url } }).then(function(html) {
+  return withTimeout(fetchText(url, { headers: { Referer: url } }), 20000).then(function(html) {
     if (html.indexOf("Sign in - Google") !== -1 || 
         html.indexOf("accounts.google.com/signin") !== -1 ||
         html.indexOf("accounts.google.com") !== -1) {
@@ -770,7 +830,7 @@ function resolveHubdrive(url, label, quality, meta) {
     }
     return resolveLink(best, label, url, quality, "", meta, 0);
   }).catch(function(e) {
-    console.log("[4KHDHub] HubDrive error:", e.message);
+    console.log("[4KHDHub] HubDrive timeout/error:", e.message || e);
     return [];
   });
 }
@@ -778,11 +838,11 @@ function resolveHubdrive(url, label, quality, meta) {
 function resolve10Gbps(url, label, quality, size, tech, langHint, meta) {
   function step(current, depth) {
     if (depth >= 6) return Promise.resolve([]);
-    return fetchResponse(current, {
+    return withTimeout(fetchResponse(current, {
       redirect: "manual",
       headers: { Referer: current },
       skipSizeCheck: true
-    }).then(function(res) {
+    }), 15000).then(function(res) {
       var finalUrl = res.url || current;
       var contentType = String(res.headers.get("content-type") || "").toLowerCase();
       var location = res.headers.get("location") || "";
@@ -800,7 +860,7 @@ function resolve10Gbps(url, label, quality, size, tech, langHint, meta) {
 
 function resolveHubcloud(url, label, referer, quality, langHint, meta) {
   var baseHeaders = referer ? { Referer: referer } : {};
-  return fetchText(url, { headers: baseHeaders }).then(function(html) {
+  return withTimeout(fetchText(url, { headers: baseHeaders }), 20000).then(function(html) {
     var entryUrl = "";
     var downloadMatch = html.match(/id="download"[^>]*href="([^"]+)"/);
     if (downloadMatch) entryUrl = downloadMatch[1];
@@ -826,7 +886,7 @@ function resolveHubcloud(url, label, referer, quality, langHint, meta) {
       return [];
     }
 
-    return fetchText(entryUrl, { headers: { Referer: url } }).then(function(eHtml) {
+    return withTimeout(fetchText(entryUrl, { headers: { Referer: url } }), 20000).then(function(eHtml) {
       var sizeMatch = eHtml.match(/id="size"[^>]*>([^<]+)/);
       var size = sizeMatch ? sizeMatch[1].trim() : "";
 
@@ -846,11 +906,11 @@ function resolveHubcloud(url, label, referer, quality, langHint, meta) {
 
         if (text.indexOf("buzzserver") !== -1) {
           asyncTasks.push(
-            fetchResponse(link + "/download", { 
+            withTimeout(fetchResponse(link + "/download", { 
               headers: { Referer: link }, 
               redirect: "manual",
               skipSizeCheck: true 
-            }).then(function(res) {
+            }), 15000).then(function(res) {
               var redir = res.headers.get("location");
               return redir ? [buildStream(label + " Buzz", redir, finalQuality, { Referer: link }, size, tech, langHint, meta)] : [];
             }).catch(function() { return []; })
@@ -882,13 +942,13 @@ function resolveHubcloud(url, label, referer, quality, langHint, meta) {
       });
     });
   }).catch(function(e) {
-    console.log("[4KHDHub] HubCloud error:", e.message);
+    console.log("[4KHDHub] HubCloud timeout/error:", e.message || e);
     return [];
   });
 }
 
 function resolveGamerxyt(url, label, quality, langHint, meta) {
-  return fetch(url, {
+  return withTimeout(fetch(url, {
     method: "POST",
     redirect: "manual",
     headers: merge(HEADERS, {
@@ -896,10 +956,10 @@ function resolveGamerxyt(url, label, quality, langHint, meta) {
       "Referer": url
     }),
     skipSizeCheck: true
-  }).then(function(res) {
+  }), 20000).then(function(res) {
     var location = res.headers.get("location") || "";
     if (location) {
-      return fetchResponse(location, { redirect: "manual", headers: { Referer: url }, skipSizeCheck: true }).then(function(r2) {
+      return withTimeout(fetchResponse(location, { redirect: "manual", headers: { Referer: url }, skipSizeCheck: true }), 15000).then(function(r2) {
         var loc2 = r2.headers.get("location") || "";
         if (loc2) return loc2;
         return r2.url || location;
@@ -914,7 +974,7 @@ function resolveGamerxyt(url, label, quality, langHint, meta) {
     }
     return [];
   }).catch(function(e) {
-    console.log("[4KHDHub] gamerxyt error:", e.message);
+    console.log("[4KHDHub] gamerxyt timeout/error:", e.message || e);
     return [];
   });
 }
@@ -950,7 +1010,7 @@ function resolveLink(rawUrl, label, referer, quality, langHint, meta, depth) {
       console.log("[4KHDHub] Resolved redirect:", rawUrl, "->", resolved);
       return resolveLink(resolved, label, referer, quality, langHint, meta, depth + 1);
     }
-    return fetchResponse(rawUrl, { redirect: "follow", headers: { Referer: referer }, skipSizeCheck: true }).then(function(res) {
+    return withTimeout(fetchResponse(rawUrl, { redirect: "follow", headers: { Referer: referer }, skipSizeCheck: true }), 15000).then(function(res) {
       var finalUrl = res.url || rawUrl;
       if (finalUrl !== rawUrl && finalUrl.indexOf("http") === 0) {
         return resolveLink(finalUrl, label, referer, quality, langHint, meta, depth + 1);
@@ -958,6 +1018,39 @@ function resolveLink(rawUrl, label, referer, quality, langHint, meta, depth) {
       return [];
     }).catch(function() { return []; });
   });
+}
+
+// ===== BATCH PROCESSING =====
+
+function resolveLinksInBatches(links, contentUrl, meta) {
+  var maxConcurrent = 4;
+  var allStreams = [];
+
+  function processBatch(startIdx) {
+    if (startIdx >= links.length) {
+      return Promise.resolve(allStreams);
+    }
+    var batch = links.slice(startIdx, startIdx + maxConcurrent);
+    console.log("[4KHDHub] Processing batch " + (Math.floor(startIdx / maxConcurrent) + 1) + "/" + Math.ceil(links.length / maxConcurrent));
+
+    var batchPromises = batch.map(function(item) {
+      var quality = parseQuality((item.fileTitle || "") + " " + (item.qualityText || "") + " " + (item.label || "") + " " + (item.rawHtml || ""));
+      var label = cleanLabel(item.fileTitle || item.label || PROVIDER_NAME);
+      var langHint = (item.fileTitle || "") + " " + (item.label || "") + " " + (item.rawHtml || "");
+      return withTimeout(resolveLink(item.url, label, contentUrl, quality, langHint, meta, 0), 45000).catch(function(e) {
+        console.log("[4KHDHub] resolveLink failed/timeout:", item.url.substring(0, 60), e.message || e);
+        return [];
+      });
+    });
+
+    return Promise.all(batchPromises).then(function(groups) {
+      var i;
+      for (i = 0; i < groups.length; i++) allStreams = allStreams.concat(groups[i] || []);
+      return processBatch(startIdx + maxConcurrent);
+    });
+  }
+
+  return processBatch(0);
 }
 
 // ===== MAIN EXTRACTION =====
@@ -974,20 +1067,12 @@ function extractFromPage(contentUrl, mediaType, season, episode, meta) {
       : extractEpisodeLinks(html, contentUrl, season, episode);
 
     console.log("[4KHDHub] Found " + links.length + " raw links for " + (mediaType === "movie" ? "movie" : "S" + season + "E" + episode));
-    if (!links.length) return [];
+    if (!links.length) {
+      console.log("[4KHDHub] No download links found on page");
+      return [];
+    }
 
-    return Promise.all(links.map(function(item) {
-      var quality = parseQuality((item.fileTitle || "") + " " + (item.qualityText || "") + " " + (item.label || "") + " " + (item.rawHtml || ""));
-      var label = cleanLabel(item.fileTitle || item.label || PROVIDER_NAME);
-      var langHint = (item.fileTitle || "") + " " + (item.label || "") + " " + (item.rawHtml || "");
-      return resolveLink(item.url, label, contentUrl, quality, langHint, meta, 0).catch(function(e) {
-        console.log("[4KHDHub] resolveLink failed:", item.url, e.message || e);
-        return [];
-      });
-    })).then(function(groups) {
-      var streams = [];
-      var i;
-      for (i = 0; i < groups.length; i++) streams = streams.concat(groups[i] || []);
+    return resolveLinksInBatches(links, contentUrl, meta).then(function(streams) {
       streams = uniqueBy(streams, function(s) {
         var titleKey = String(s.title || "").toLowerCase().replace(/[^a-z0-9]/g, "");
         var qualKey = String(s.quality || "").toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -998,6 +1083,9 @@ function extractFromPage(contentUrl, mediaType, season, episode, meta) {
       console.log("[4KHDHub] Total streams:", streams.length);
       return streams;
     });
+  }).catch(function(err) {
+    console.log("[4KHDHub] extractFromPage error:", err.message || err);
+    return [];
   });
 }
 
