@@ -147,13 +147,13 @@ function getStreams(tmdbId, mediaType, season, episode) {
           var html = scripts[i];
           if (!html || html.indexOf("atob") === -1) continue;
 
-          var regex = /atob\s*\(\s*(['"])(.*?)\1\s*\)/g;
+          var regex = /atob\s*\(\s*(["'])(.*?)\1\s*\)/g;
           var match;
           while ((match = regex.exec(html)) !== null) {
             var decoded = atobPolyfill(match[2]);
             if (!decoded || decoded.length < 10) continue;
 
-            var fileMatch = decoded.match(/file\s*:\s*(['"])(.*?)\1/s) || decoded.match(/file\s*:\s*(\[.*?\])/s);
+            var fileMatch = decoded.match(/file\s*:\s*(["'])(.*?)\1/s) || decoded.match(/file\s*:\s*(\[.*?\])/s);
             if (fileMatch) {
               var rawFile = fileMatch[2] || fileMatch[1];
               if (rawFile && rawFile.length > 5) {
@@ -200,38 +200,17 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
         var processStr = function(str, title) {
           console.log("[CinemaCity] Processing file string, length:", str.length);
+
           if (str.indexOf(".urlset/master.m3u8") !== -1) {
-            // PlayerJS multi-file format: base,path1,path2,...,pathN,.urlset/master.m3u8
-            var baseMatch = str.match(/^(https?:\/\/[^,]+\/public_files\/)/);
-            var baseUrl = baseMatch ? baseMatch[1] : "";
-
-            if (baseUrl) {
-              // HLS master playlist
-              addStream(baseUrl + ".urlset/master.m3u8", title, "Auto");
-              console.log("[CinemaCity] Added stream: Auto (HLS)");
-
-              // Extract MP4 quality variants: ,YYYY-MM/...v3_nf_XXXp.mp4
-              var qualityRegex = /,((?:\d{4}-\d{2}\/)?[^,]*?v\d+_nf_(\d+p)\.mp4)/g;
-              var qMatch;
-              var count = 0;
-              while ((qMatch = qualityRegex.exec(str)) !== null) {
-                addStream(baseUrl + qMatch[1], title, qMatch[2]);
-                console.log("[CinemaCity] Added stream:", qMatch[2]);
-                count++;
-              }
-
-              if (count === 0) {
-                // Fallback: generic quality pattern
-                var genericRegex = /,((?:\d{4}-\d{2}\/)?[^,]*?(\d{3,4}p)\.mp4)/g;
-                while ((qMatch = genericRegex.exec(str)) !== null) {
-                  addStream(baseUrl + qMatch[1], title, qMatch[2]);
-                  console.log("[CinemaCity] Added stream (generic):", qMatch[2]);
-                }
-              }
-            } else {
-              addStream(str, title, "Auto");
-            }
+            // This is a PlayerJS multi-file format string.
+            // The CDN endpoint .urlset/master.m3u8?action=download&video=...&audio=... 
+            // dynamically generates a proper HLS master playlist with video+audio+subs combined.
+            // The individual MP4s in the string are separate tracks (not standalone playable videos).
+            // Only the HLS master URL works correctly.
+            addStream(str, title, "Auto");
+            console.log("[CinemaCity] Added HLS Auto stream");
           } else if (str.indexOf("[") !== -1) {
+            // Quality-labeled direct URLs: [360p]url1,[720p]url2
             var urls = str.split(",");
             urls.forEach(function(u) {
               var m = u.match(/\[(.*?)\](.*)/);
@@ -239,6 +218,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
               else addStream(u, title, extractQuality(u));
             });
           } else {
+            // Single direct URL
             addStream(str, title, extractQuality(str));
           }
           console.log("[CinemaCity] Returning", streams.length, "streams");
