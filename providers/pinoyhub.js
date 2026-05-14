@@ -1,11 +1,17 @@
 // providers/pinoyhub.js
-// PinoyMoviesHub - Original approach with KissKH-style TMDB auto-detect + embed resolvers
+// PinoyMoviesHub - Proxy Edition
+// All bysesayeveum embeds route through RDP proxy for extraction
 
 var cheerio = require("cheerio-without-node-native");
 
 var PROVIDER_NAME = "PinoyMoviesHub";
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var BASE_URL = "https://pinoymovieshub.win";
+
+// RDP Proxy Server - handles extraction + CDN proxying
+var PROXY_HOST = "194.233.72.38";
+var PROXY_PORT = "3128";
+var PROXY_BASE = "http://" + PROXY_HOST + ":" + PROXY_PORT;
 
 var HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
@@ -14,8 +20,6 @@ var HEADERS = {
     "Referer": BASE_URL,
     "Cookie": "starstruck_7da72d90b632af60dd1158c068193d61=99f22538d0588cdd7ccfc783299f88a7"
 };
-
-// ===== UTILITY FUNCTIONS =====
 
 function merge(obj1, obj2) {
     var out = {};
@@ -91,7 +95,7 @@ function log(msg) {
     }
 }
 
-// ===== TMDB AUTO-DETECT (KissKH-style) =====
+// ===== TMDB AUTO-DETECT =====
 
 function getTmdbInfoAuto(tmdbId, forceTv) {
     return new Promise(function(resolve, reject) {
@@ -111,9 +115,7 @@ function getTmdbInfoAuto(tmdbId, forceTv) {
                     return;
                 }
                 reject(new Error("TMDB TV ID not found: " + tmdbId));
-            }).catch(function(err) {
-                reject(err);
-            });
+            }).catch(function(err) { reject(err); });
             return;
         }
 
@@ -132,7 +134,6 @@ function getTmdbInfoAuto(tmdbId, forceTv) {
                 });
                 return;
             }
-
             var tvUrl = "https://api.themoviedb.org/3/tv/" + tmdbId + "?api_key=" + TMDB_API_KEY;
             log("Movie 404, trying TV: " + tmdbId);
             return fetchJson(tvUrl);
@@ -150,9 +151,7 @@ function getTmdbInfoAuto(tmdbId, forceTv) {
             }
             if (tvData === undefined) return;
             reject(new Error("TMDB ID not found: " + tmdbId));
-        }).catch(function(err) {
-            reject(err);
-        });
+        }).catch(function(err) { reject(err); });
     });
 }
 
@@ -164,333 +163,15 @@ function getTmdbEpisodeTitle(tmdbId, season, episode) {
     }).catch(function() { return ""; });
 }
 
-// ===== EMBED RESOLVERS =====
+// ===== PROXY RESOLVER =====
+// All embed URLs route through RDP proxy. The proxy extracts CDN internally.
 
-function resolveMixdrop(embedUrl) {
-    return new Promise(function(resolve) {
-        log("Resolving Mixdrop: " + embedUrl.substring(0, 60));
-
-        // Try /f/ URL (file page) instead of /e/ (embed page)
-        var fileUrl = embedUrl.replace("/e/", "/f/");
-        log("Trying Mixdrop file page: " + fileUrl.substring(0, 60));
-
-        fetchText(fileUrl, {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://mixdrop.top/",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9"
-        }).then(function(html) {
-            // Look for packed JS with wurl
-            var wurlMatch = html.match(/wurl\s*=\s*["']([^"']+)["']/);
-            if (wurlMatch) {
-                var videoUrl = wurlMatch[1];
-                if (!videoUrl.startsWith("http")) videoUrl = "https:" + videoUrl;
-                log("Found Mixdrop wurl: " + videoUrl.substring(0, 80));
-                resolve(videoUrl);
-                return;
-            }
-
-            var srcMatch = html.match(/src\s*:\s*["'](https?:\/\/[^"']+\.(?:m3u8|mp4)[^"]*)["']/i);
-            if (srcMatch) {
-                log("Found Mixdrop src: " + srcMatch[1].substring(0, 80));
-                resolve(srcMatch[1]);
-                return;
-            }
-
-            var videoMatch = html.match(/<video[^>]+src=["']([^"']+)["']/i);
-            if (videoMatch) {
-                resolve(videoMatch[1]);
-                return;
-            }
-
-            // Fallback to embed page
-            log("Mixdrop /f/ failed, trying /e/ page");
-            return fetchText(embedUrl, {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Referer": "https://mixdrop.top/",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9"
-            });
-        }).then(function(html) {
-            if (!html) {
-                resolve(embedUrl);
-                return;
-            }
-            var wurlMatch = html.match(/wurl\s*=\s*["']([^"']+)["']/);
-            if (wurlMatch) {
-                var videoUrl = wurlMatch[1];
-                if (!videoUrl.startsWith("http")) videoUrl = "https:" + videoUrl;
-                resolve(videoUrl);
-                return;
-            }
-            var videoMatch = html.match(/<video[^>]+src=["']([^"']+)["']/i);
-            if (videoMatch) {
-                resolve(videoMatch[1]);
-                return;
-            }
-            log("Mixdrop resolver failed, returning embed URL");
-            resolve(embedUrl);
-        }).catch(function(err) {
-            log("Mixdrop error: " + err.message);
-            resolve(embedUrl);
-        });
-    });
-}
-
-function resolveBysesayeveum(embedUrl) {
-    return new Promise(function(resolve) {
-        log("Resolving Bysesayeveum: " + embedUrl.substring(0, 60));
-
-        // Try /d/ URL instead of /e/ - the download page works better
-        var downloadUrl = embedUrl.replace("/e/", "/d/");
-        log("Trying download page: " + downloadUrl.substring(0, 60));
-
-        fetchText(downloadUrl, {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://bysesayeveum.com/",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9"
-        }).then(function(html) {
-            // Look for video sources in download page
-            var videoMatch = html.match(/<video[^>]+src=["']([^"']+)["']/i);
-            if (videoMatch) {
-                log("Found Bysesayeveum video src: " + videoMatch[1].substring(0, 80));
-                resolve(videoMatch[1]);
-                return;
-            }
-
-            var sourceMatch = html.match(/<source[^>]+src=["']([^"']+)["']/i);
-            if (sourceMatch) {
-                log("Found Bysesayeveum source: " + sourceMatch[1].substring(0, 80));
-                resolve(sourceMatch[1]);
-                return;
-            }
-
-            // Look for data attributes
-            var dataMatch = html.match(/data-file=["']([^"']+)["']/i) ||
-                           html.match(/data-video=["']([^"']+)["']/i) ||
-                           html.match(/data-url=["']([^"']+)["']/i);
-            if (dataMatch) {
-                var dataFile = dataMatch[1];
-                try {
-                    var decoded = atob(dataFile);
-                    if (/\.(m3u8|mp4)/i.test(decoded)) {
-                        log("Found Bysesayeveum base64: " + decoded.substring(0, 80));
-                        resolve(decoded);
-                        return;
-                    }
-                } catch(e) {}
-                if (/^https?:/i.test(dataFile)) {
-                    log("Found Bysesayeveum data-file: " + dataFile.substring(0, 80));
-                    resolve(dataFile);
-                    return;
-                }
-            }
-
-            // Look for scripts with video URLs
-            var scripts = html.match(/<script[^>]*>([\s\S]*?)<\/script>/gi) || [];
-            for (var i = 0; i < scripts.length; i++) {
-                var urlMatch = scripts[i].match(/(https?:\/\/[^"'\s]+\.(?:m3u8|mp4)[^"'\s]*)/i);
-                if (urlMatch) {
-                    log("Found Bysesayeveum script URL: " + urlMatch[1].substring(0, 80));
-                    resolve(urlMatch[1]);
-                    return;
-                }
-            }
-
-            // Fallback to original embed URL
-            log("Bysesayeveum /d/ page failed, trying /e/ page");
-            return fetchText(embedUrl, {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Referer": "https://bysesayeveum.com/",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9"
-            });
-        }).then(function(html) {
-            if (!html) {
-                resolve(embedUrl);
-                return;
-            }
-            var videoMatch = html.match(/<video[^>]+src=["']([^"']+)["']/i);
-            if (videoMatch) {
-                resolve(videoMatch[1]);
-                return;
-            }
-            var scripts = html.match(/<script[^>]*>([\s\S]*?)<\/script>/gi) || [];
-            for (var i = 0; i < scripts.length; i++) {
-                var urlMatch = scripts[i].match(/(https?:\/\/[^"'\s]+\.(?:m3u8|mp4)[^"'\s]*)/i);
-                if (urlMatch) {
-                    resolve(urlMatch[1]);
-                    return;
-                }
-            }
-            log("Bysesayeveum resolver failed, returning embed URL");
-            resolve(embedUrl);
-        }).catch(function(err) {
-            log("Bysesayeveum error: " + err.message);
-            resolve(embedUrl);
-        });
-    });
-}
-
-function resolvePlaymogo(embedUrl) {
-    return new Promise(function(resolve) {
-        log("Resolving Playmogo: " + embedUrl.substring(0, 60));
-
-        // Try /v/ URL (video page) instead of /e/ (embed page)
-        var videoUrl = embedUrl.replace("/e/", "/v/");
-        log("Trying Playmogo video page: " + videoUrl.substring(0, 60));
-
-        fetchText(videoUrl, {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://playmogo.com/",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9"
-        }).then(function(html) {
-            var urlMatch = html.match(/(https?:\/\/[^"'\s]+\.(?:m3u8|mp4)[^"'\s]*)/i);
-            if (urlMatch) {
-                log("Found Playmogo URL: " + urlMatch[1].substring(0, 80));
-                resolve(urlMatch[1]);
-                return;
-            }
-
-            var videoMatch = html.match(/<video[^>]+src=["']([^"']+)["']/i);
-            if (videoMatch) {
-                log("Found Playmogo video: " + videoMatch[1].substring(0, 80));
-                resolve(videoMatch[1]);
-                return;
-            }
-
-            // Fallback to embed page
-            log("Playmogo /v/ failed, trying /e/ page");
-            return fetchText(embedUrl, {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Referer": "https://playmogo.com/",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9"
-            });
-        }).then(function(html) {
-            if (!html) {
-                resolve(embedUrl);
-                return;
-            }
-            var urlMatch = html.match(/(https?:\/\/[^"'\s]+\.(?:m3u8|mp4)[^"'\s]*)/i);
-            if (urlMatch) {
-                resolve(urlMatch[1]);
-                return;
-            }
-            var iframeMatch = html.match(/<iframe[^>]+src=["']([^"]+)["']/i);
-            if (iframeMatch) {
-                var iframeUrl = iframeMatch[1];
-                if (!iframeUrl.startsWith("http")) {
-                    try { iframeUrl = new URL(iframeUrl, embedUrl).href; } catch(e) {}
-                }
-                log("Found Playmogo iframe, following: " + iframeUrl.substring(0, 60));
-                resolveGenericEmbed(iframeUrl).then(resolve);
-                return;
-            }
-            log("Playmogo resolver failed, returning embed URL");
-            resolve(embedUrl);
-        }).catch(function(err) {
-            log("Playmogo error: " + err.message);
-            resolve(embedUrl);
-        });
-    });
-}
-
-function resolveGenericEmbed(embedUrl) {
-    return new Promise(function(resolve) {
-        log("Generic embed resolver: " + embedUrl.substring(0, 60));
-        fetchText(embedUrl, {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": embedUrl,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9"
-        }).then(function(html) {
-            var patterns = [
-                /<video[^>]+src=["']([^"']+)["']/i,
-                /<source[^>]+src=["']([^"']+)["']/i,
-                /file\s*:\s*["']([^"']+)["']/i,
-                /src\s*:\s*["'](https?:\/\/[^"']+\.(?:m3u8|mp4)[^"]*)["']/i,
-                /(https?:\/\/[^"'\s]+\.(?:m3u8|mp4)[^"'\s]*)/i
-            ];
-            for (var i = 0; i < patterns.length; i++) {
-                var match = html.match(patterns[i]);
-                if (match) {
-                    var url = match[1] || match[0];
-                    if (url && /\.(m3u8|mp4)/i.test(url)) {
-                        log("Generic resolver found URL: " + url.substring(0, 80));
-                        resolve(url);
-                        return;
-                    }
-                }
-            }
-            resolve(embedUrl);
-        }).catch(function() {
-            resolve(embedUrl);
-        });
-    });
-}
-
-// Bysesayeveum resolver server
-// Config: change this to your server IP
-var RESOLVER_HOST = "194.233.72.38";
-var RESOLVER_PORT = "3128";
-
-function callExternalResolver(embedUrl) {
-    return new Promise(function(resolve) {
-        // Use the proxy server endpoint - it resolves AND proxies through RDP
-        var proxyUrl = embedUrl;
-        if (proxyUrl.indexOf("/e/") !== -1) {
-            proxyUrl = proxyUrl.replace("/e/", "/d/");
-        }
-        var apiUrl = "http://" + RESOLVER_HOST + ":" + RESOLVER_PORT + "/proxy?u=" + encodeURIComponent(proxyUrl);
-        log("Calling proxy server: " + apiUrl.substring(0, 80));
-
-        // The proxy server returns a rewritten HLS playlist
-        // All segment URLs inside are also proxied through RDP
-        resolve(apiUrl);
-    });
-}
-
-function resolveEmbed(embedUrl) {
-    return new Promise(function(resolve) {
-        var host = "";
-        try {
-            if (typeof URL !== "undefined") {
-                host = new URL(embedUrl).hostname.toLowerCase();
-            }
-        } catch(e) {}
-        log("Resolving embed host: " + host);
-
-        // Bysesayeveum: route through proxy server (resolves + proxies through RDP)
-        if (host.indexOf("bysesayeveum") !== -1) {
-            var downloadUrl = embedUrl.replace("/e/", "/d/");
-            log("Bysesayeveum: routing through proxy " + downloadUrl.substring(0, 60));
-
-            callExternalResolver(downloadUrl).then(function(proxyUrl) {
-                if (proxyUrl) {
-                    log("Bysesayeveum proxy URL: " + proxyUrl.substring(0, 80));
-                    resolve(proxyUrl);
-                } else {
-                    log("Bysesayeveum proxy failed, returning embed URL");
-                    resolve(embedUrl);
-                }
-            });
-            return;
-        }
-
-        // Mixdrop and Playmogo: return embed URL for WebView
-        if (host.indexOf("mixdrop") !== -1 || host.indexOf("m1xdrop") !== -1 || 
-            host.indexOf("playmogo") !== -1) {
-            log("Host " + host + " requires WebView, returning embed URL");
-            resolve(embedUrl);
-            return;
-        }
-
-        // Generic fallback
-        resolveGenericEmbed(embedUrl).then(resolve);
-    });
+function getProxyUrl(embedUrl) {
+    // Route any embed URL through the proxy server
+    // Proxy handles: bysesayeveum, playmogo, mixdrop, etc.
+    var proxyUrl = PROXY_BASE + "/proxy?u=" + encodeURIComponent(embedUrl);
+    log("Proxy URL: " + proxyUrl.substring(0, 80));
+    return proxyUrl;
 }
 
 // ===== DOOPLAYER API =====
@@ -506,12 +187,7 @@ function extractPlayerData(html) {
         var nonce = $(el).attr("data-nonce") || "";
 
         if (postId) {
-            players.push({
-                postId: postId,
-                type: type,
-                source: source,
-                nonce: nonce
-            });
+            players.push({ postId: postId, type: type, source: source, nonce: nonce });
         }
     });
 
@@ -553,9 +229,7 @@ function callDooPlayerAPI(playerData) {
     log("Calling Dooplayer API: " + apiUrl);
 
     return fetchJson(apiUrl, {
-        headers: merge(HEADERS, {
-            "X-Requested-With": "XMLHttpRequest"
-        })
+        headers: merge(HEADERS, { "X-Requested-With": "XMLHttpRequest" })
     }).then(function(data) {
         if (!data) {
             log("Dooplayer API returned null");
@@ -579,7 +253,9 @@ function callDooPlayerAPI(playerData) {
             return null;
         }
         log("Dooplayer embed URL: " + embedUrl);
-        return resolveEmbed(embedUrl);
+
+        // Route through proxy - proxy extracts CDN internally
+        return getProxyUrl(embedUrl);
     }).catch(function(e) {
         log("Dooplayer API error: " + e.message);
         return null;
@@ -594,12 +270,10 @@ function buildStream(name, url, quality, language, displayTitle, meta) {
     var host = "";
     try { host = new URL(url).hostname.replace(/^www\./, "").replace(/\.com$/, "").replace(/\.top$/, "").replace(/\.click$/, ""); } catch(e) {}
 
-    var isEmbed = !/\.(m3u8|mp4|mkv|webm|avi|mov)(\?|#|$)/i.test(url);
-    // Proxy URLs (containing /proxy?u=) are direct HLS streams, not embeds
-    if (url.indexOf("/proxy?u=") !== -1) {
-        isEmbed = false;
-    }
-    var q = isEmbed ? "Browser" : parseQuality(quality + " " + language);
+    // Proxy URLs are direct video streams (not embeds)
+    var isProxy = url.indexOf("/proxy?u=") !== -1;
+    var isEmbed = !isProxy && !/\.(m3u8|mp4|mkv|webm|avi|mov)(\?|#|$)/i.test(url);
+    var q = isEmbed ? "Browser" : (isProxy ? "Auto" : parseQuality(quality + " " + language));
 
     var line1, line2;
     if (isSeries) {
@@ -615,7 +289,7 @@ function buildStream(name, url, quality, language, displayTitle, meta) {
         line2 = q + " | " + lang + (host ? " | " + host : "");
     }
 
-    return {
+    var stream = {
         name: PROVIDER_NAME + (isEmbed ? " | " + lang + " | (Embed)" : " | " + q + " | " + lang),
         title: line1 + "\n" + line2,
         url: url,
@@ -627,6 +301,19 @@ function buildStream(name, url, quality, language, displayTitle, meta) {
             notWebReady: isEmbed
         }
     };
+
+    // Proxy streams need proper headers for CDN
+    if (isProxy) {
+        stream.behaviorHints.proxyHeaders = {
+            request: {
+                "User-Agent": HEADERS["User-Agent"],
+                "Referer": "https://bysesayeveum.com/",
+                "Origin": "https://bysesayeveum.com"
+            }
+        };
+    }
+
+    return stream;
 }
 
 // ===== MAIN ENTRY =====
@@ -690,11 +377,11 @@ function getStreams(tmdbId, season, episode) {
                 log("Using Dooplayer API approach");
 
                 return Promise.all(players.map(function(player) {
-                    return callDooPlayerAPI(player).then(function(embedUrl) {
-                        if (!embedUrl) return null;
+                    return callDooPlayerAPI(player).then(function(proxyUrl) {
+                        if (!proxyUrl) return null;
                         return buildStream(
                             PROVIDER_NAME + " - Source " + player.source,
-                            embedUrl,
+                            proxyUrl,
                             "Auto",
                             "",
                             displayTitle,
