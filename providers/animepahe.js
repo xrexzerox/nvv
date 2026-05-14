@@ -1,335 +1,364 @@
-/**
- * animepahe - Built from src/animepahe/
- * Modified: removed proxy, 360p & dub; only 1080p/720p Sub
- */
-var __create = Object.create;
-var __defProp = Object.defineProperty;
-var __defProps = Object.defineProperties;
-var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
-var __getOwnPropDescs = Object.getOwnPropertyDescriptors;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __getOwnPropSymbols = Object.getOwnPropertySymbols;
-var __getProtoOf = Object.getPrototypeOf;
-var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __propIsEnum = Object.prototype.propertyIsEnumerable;
-var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
-var __spreadValues = (a, b) => {
-  for (var prop in b || (b = {}))
-    if (__hasOwnProp.call(b, prop))
-      __defNormalProp(a, prop, b[prop]);
-  if (__getOwnPropSymbols)
-    for (var prop of __getOwnPropSymbols(b)) {
-      if (__propIsEnum.call(b, prop))
-        __defNormalProp(a, prop, b[prop]);
-    }
-  return a;
-};
-var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
-var __objRest = (source, exclude) => {
-  var target = {};
-  for (var prop in source)
-    if (__hasOwnProp.call(source, prop) && exclude.indexOf(prop) < 0)
-      target[prop] = source[prop];
-  if (source != null && __getOwnPropSymbols)
-    for (var prop of __getOwnPropSymbols(source)) {
-      if (exclude.indexOf(prop) < 0 && __propIsEnum.call(source, prop))
-        target[prop] = source[prop];
-    }
-  return target;
-};
-var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
-    for (let key of __getOwnPropNames(from))
-      if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
-  }
-  return to;
-};
-var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
-  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
-  mod
-));
-var __async = (__this, __arguments, generator) => {
-  return new Promise((resolve, reject) => {
-    var fulfilled = (value) => {
-      try {
-        step(generator.next(value));
-      } catch (e) {
-        reject(e);
-      }
-    };
-    var rejected = (value) => {
-      try {
-        step(generator.throw(value));
-      } catch (e) {
-        reject(e);
-      }
-    };
-    var step = (x) => x.done ? resolve(x.value) : Promise.resolve(x.value).then(fulfilled, rejected);
-    step((generator = generator.apply(__this, __arguments)).next());
-  });
-};
-
-// src/animepahe/index.js
-var import_cheerio_without_node_native = __toESM(require("cheerio-without-node-native"));
-
-// src/animepahe/constants.js
 var MAIN_URL = "https://animepahe.pw";
-// PROXY_URL removed
+var PROXY_URL = "https://animepaheproxy.phisheranimepahe.workers.dev/?url=";
 var HEADERS = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36",
   "Cookie": "__ddg2_=1234567890",
   "Referer": "https://animepahe.pw/"
 };
+var TMDB_API_KEY = "1865f43a0549ca50d341dd9ab8b29f49";
 
-// src/animepahe/utils.js
-function fetchText(_0) {
-  return __async(this, arguments, function* (url, options = {}) {
-    const _a = options, { useProxy = false } = _a, fetchOptions = __objRest(_a, ["useProxy"]); // proxy disabled by default
-    const finalUrl = url.startsWith("http") ? url : `${MAIN_URL}${url}`;
-    // Direct request – no proxy
-    const targetUrl = finalUrl;
-    const response = yield fetch(targetUrl, __spreadValues({
-      headers: HEADERS
-    }, fetchOptions));
-    if (!response.ok)
-      throw new Error(`HTTP ${response.status} on ${finalUrl}`);
-    return yield response.text();
+function fetchText(url, options) {
+  options = options || {};
+  var useProxy = options.useProxy !== false;
+  var finalUrl = url.indexOf("http") === 0 ? url : MAIN_URL + url;
+  var targetUrl = useProxy ? PROXY_URL + encodeURIComponent(finalUrl) : finalUrl;
+
+  var fetchOpts = Object.assign({
+    headers: options.headers || HEADERS,
+    skipSizeCheck: true
+  }, options);
+  delete fetchOpts.useProxy;
+  delete fetchOpts.headers;
+  fetchOpts.headers = options.headers || HEADERS;
+
+  return fetch(targetUrl, fetchOpts).then(function(response) {
+    if (!response.ok) throw new Error("HTTP " + response.status + " on " + finalUrl);
+    return response.text();
   });
 }
-function fetchJson(_0) {
-  return __async(this, arguments, function* (url, options = {}) {
-    const text = yield fetchText(url, options);
+
+function fetchJson(url, options) {
+  return fetchText(url, options).then(function(text) {
     return JSON.parse(text);
   });
 }
+
 function getImdbId(tmdbId, mediaType) {
-  return __async(this, null, function* () {
-    try {
-      const url = `https://api.themoviedb.org/3/${mediaType === "tv" ? "tv" : "movie"}/${tmdbId}/external_ids?api_key=1865f43a0549ca50d341dd9ab8b29f49`;
-      const res = yield fetch(url);
-      const data = yield res.json();
-      return data.imdb_id;
-    } catch (e) {
-      return null;
-    }
-  });
+  var url = "https://api.themoviedb.org/3/" + (mediaType === "tv" ? "tv" : "movie") + "/" + tmdbId + "/external_ids?api_key=" + TMDB_API_KEY;
+  return fetch(url, { skipSizeCheck: true })
+    .then(function(res) { return res.json(); })
+    .then(function(data) { return data.imdb_id; })
+    .catch(function() { return null; });
 }
+
 function resolveMapping(imdbId, season, episode) {
-  return __async(this, null, function* () {
-    try {
-      const url = `https://id-mapping-api-malid.hf.space/api/resolve?id=${imdbId}&s=${season}&e=${episode}`;
-      const res = yield fetch(url);
-      if (!res.ok)
-        return null;
-      return yield res.json();
-    } catch (e) {
-      return null;
-    }
-  });
+  var url = "https://id-mapping-api-malid.hf.space/api/resolve?id=" + imdbId + "&s=" + season + "&e=" + episode;
+  return fetch(url, { skipSizeCheck: true })
+    .then(function(res) {
+      if (!res.ok) return null;
+      return res.json();
+    })
+    .catch(function() { return null; });
 }
+
 function getMalTitle(malId) {
-  return __async(this, null, function* () {
-    try {
-      const res = yield fetch(`https://api.jikan.moe/v4/anime/${malId}`);
-      if (!res.ok)
-        return null;
-      const data = yield res.json();
-      return data.data.title;
-    } catch (e) {
-      return null;
-    }
-  });
+  return fetch("https://api.jikan.moe/v4/anime/" + malId, { skipSizeCheck: true })
+    .then(function(res) {
+      if (!res.ok) return null;
+      return res.json();
+    })
+    .then(function(data) {
+      return data.data ? data.data.title : null;
+    })
+    .catch(function() { return null; });
 }
+
 function searchAnime(query) {
-  return __async(this, null, function* () {
-    const url = `/api?m=search&l=8&q=${encodeURIComponent(query)}`;
-    return yield fetchJson(url);
-  });
+  var url = "/api?m=search&l=8&q=" + encodeURIComponent(query);
+  return fetchJson(url);
 }
+
 function extractQuality(text) {
-  const match = text.match(/(\d{3,4}p)/);
+  var match = text.match(/(\d{3,4}p)/);
   return match ? match[1] : "720p";
 }
 
-// src/animepahe/extractors.js
 function unpack(code) {
   try {
-    const match = code.match(/}\((['"])([\s\S]*?)\1,\s*(\d+),\s*(\d+),\s*(['"])([\s\S]*?)\5\.split\((['"])\|\7\)/);
+    var match = code.match(/}\((['"])([\s\S]*?)\1,\s*(\d+),\s*(\d+),\s*(['"])([\s\S]*?)\5\.split\((['"])\|\7\)/);
     if (match) {
-      let [_, quote1, p, a, c, quote2, kStr] = match;
+      var p = match[2];
+      var a = parseInt(match[3]);
+      var c = parseInt(match[4]);
+      var kStr = match[6];
       p = p.replace(/\\'/g, "'").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
-      a = parseInt(a);
-      c = parseInt(c);
-      const k = kStr.split("|");
-      const e = (c2) => (c2 < a ? "" : e(parseInt(c2 / a))) + ((c2 = c2 % a) > 35 ? String.fromCharCode(c2 + 29) : c2.toString(36));
-      const d = {};
-      while (c--)
+      var k = kStr.split("|");
+      var e = function(c2) {
+        return (c2 < a ? "" : e(parseInt(c2 / a))) + ((c2 = c2 % a) > 35 ? String.fromCharCode(c2 + 29) : c2.toString(36));
+      };
+      var d = {};
+      while (c--) {
         d[e(c)] = k[c] || e(c);
-      return p.replace(/\b\w+\b/g, (w) => d[w]);
+      }
+      return p.replace(/\b\w+\b/g, function(w) {
+        return d[w];
+      });
     }
   } catch (e) {
     console.error("[AnimePahe] Unpack error:", e.message);
   }
   return code;
 }
+
 function extractKwik(url) {
-  return __async(this, null, function* () {
-    try {
-      const html = yield fetchText(url, {
-        headers: __spreadProps(__spreadValues({}, HEADERS), {
-          "Referer": url,
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }),
-        useProxy: false
-      });
-      const scripts = html.match(/<script.*?>([\s\S]*?)<\/script>/g) || [];
-      const matches = [];
-      for (const script of scripts) {
-        if (script.includes("eval(function(p,a,c,k,e,d)")) {
-          let pos = 0;
-          while (true) {
-            const start = script.indexOf("eval(function(p,a,c,k,e,d)", pos);
-            if (start === -1)
-              break;
-            const end = script.indexOf(".split('|')", start);
-            if (end === -1)
-              break;
-            const closeParen = script.indexOf("))", end);
-            if (closeParen === -1)
-              break;
-            matches.push(script.substring(start, closeParen + 2));
-            pos = closeParen + 2;
-          }
+  return fetchText(url, {
+    headers: Object.assign({}, HEADERS, {
+      "Referer": url,
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }),
+    useProxy: false
+  }).then(function(html) {
+    var scripts = html.match(/<script[^>]*>([\s\S]*?)<\/script>/g) || [];
+    var matches = [];
+    for (var i = 0; i < scripts.length; i++) {
+      var script = scripts[i];
+      if (script.indexOf("eval(function(p,a,c,k,e,d)") !== -1) {
+        var pos = 0;
+        while (true) {
+          var start = script.indexOf("eval(function(p,a,c,k,e,d)", pos);
+          if (start === -1) break;
+          var end = script.indexOf(".split('|')", start);
+          if (end === -1) break;
+          var closeParen = script.indexOf("))", end);
+          if (closeParen === -1) break;
+          matches.push(script.substring(start, closeParen + 2));
+          pos = closeParen + 2;
         }
       }
-      for (const scriptContent of matches) {
-        const unpacked = unpack(scriptContent);
-        const urlMatch = unpacked.match(/source\s*=\s*['"](https?:\/\/.*?)['"]/) || unpacked.match(/const\s+source\s*=\s*['"](https?:\/\/.*?)['"]/) || unpacked.match(/var\s+source\s*=\s*['"](https?:\/\/.*?)['"]/) || unpacked.match(/src\s*:\s*['"](https?:\/\/.*?)['"]/);
-        if (urlMatch) {
-          return {
-            url: urlMatch[1],
-            headers: {
-              "Referer": "https://kwik.cx/",
-              "Origin": "https://kwik.cx",
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            }
-          };
-        }
-      }
-    } catch (e) {
-      console.error("[AnimePahe] Kwik extraction failed:", e.message);
     }
+    for (var j = 0; j < matches.length; j++) {
+      var unpacked = unpack(matches[j]);
+      var urlMatch = unpacked.match(/source\s*=\s*["'](https?:\/\/.*?)["']/) ||
+                     unpacked.match(/const\s+source\s*=\s*["'](https?:\/\/.*?)["']/) ||
+                     unpacked.match(/var\s+source\s*=\s*["'](https?:\/\/.*?)["']/) ||
+                     unpacked.match(/src\s*:\s*["'](https?:\/\/.*?)["']/);
+      if (urlMatch) {
+        return {
+          url: urlMatch[1],
+          headers: {
+            "Referer": "https://kwik.cx/",
+            "Origin": "https://kwik.cx",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          }
+        };
+      }
+    }
+    return null;
+  }).catch(function(e) {
+    console.error("[AnimePahe] Kwik extraction failed:", e.message);
     return null;
   });
 }
 
-// src/animepahe/index.js
+function parseResolutionButtons(html) {
+  var streams = [];
+  var regex = /<button[^>]*data-src=["']([^"']+)["'][^>]*>([\s\S]*?)<\/button>/gi;
+  var match;
+  while ((match = regex.exec(html)) !== null) {
+    var kwikUrl = match[1];
+    var btnText = match[2].replace(/<[^>]*>/g, "").trim();
+    if (kwikUrl && kwikUrl.indexOf("kwik") !== -1) {
+      var quality = extractQuality(btnText);
+      var type = btnText.toLowerCase().indexOf("eng") !== -1 ? "Dub" : "Sub";
+      streams.push({
+        kwikUrl: kwikUrl,
+        quality: quality,
+        type: type,
+        name: "AnimePahe (" + quality + " " + type + ")"
+      });
+    }
+  }
+  return streams;
+}
+
 function getStreams(tmdbId, mediaType, season, episode) {
-  return __async(this, null, function* () {
-    try {
-      let animeSession = null;
-      let animeTitle = "";
-      let mappedEp = episode;
-      let targetMalId = null;
-      if (mediaType === "tv") {
-        const imdbId = yield getImdbId(tmdbId, mediaType);
-        if (!imdbId)
-          return [];
-        const mapping = yield resolveMapping(imdbId, season, episode);
-        if (!mapping || !mapping.mal_id)
-          return [];
-        targetMalId = mapping.mal_id;
-        mappedEp = mapping.mal_episode || episode;
-        animeTitle = yield getMalTitle(targetMalId);
-        if (!animeTitle)
-          return [];
-        const searchResults = yield searchAnime(animeTitle);
-        if (searchResults.data && searchResults.data.length > 0) {
-          for (let i = 0; i < Math.min(searchResults.data.length, 3); i++) {
-            const item = searchResults.data[i];
-            const pageHtml = yield fetchText(`/anime/${item.session}`);
-            if (pageHtml.includes(`myanimelist.net/anime/${targetMalId}`)) {
-              animeSession = item.session;
-              break;
+  console.log("[AnimePahe] Starting for TMDB ID:", tmdbId, "Type:", mediaType);
+  return new Promise(function(resolve, reject) {
+    var animeSession = null;
+    var animeTitle = "";
+    var mappedEp = episode;
+    var targetMalId = null;
+
+    if (mediaType === "tv") {
+      getImdbId(tmdbId, mediaType)
+        .then(function(imdbId) {
+          console.log("[AnimePahe] IMDB ID:", imdbId);
+          if (!imdbId) {
+            resolve([]);
+            return Promise.reject("No IMDB");
+          }
+          return resolveMapping(imdbId, season, episode);
+        })
+        .then(function(mapping) {
+          console.log("[AnimePahe] MAL mapping:", mapping);
+          if (!mapping || !mapping.mal_id) {
+            resolve([]);
+            return Promise.reject("No MAL mapping");
+          }
+          targetMalId = mapping.mal_id;
+          mappedEp = mapping.mal_episode || episode;
+          return getMalTitle(targetMalId);
+        })
+        .then(function(title) {
+          animeTitle = title;
+          console.log("[AnimePahe] MAL title:", animeTitle);
+          if (!animeTitle) {
+            resolve([]);
+            return Promise.reject("No MAL title");
+          }
+          return searchAnime(animeTitle);
+        })
+        .then(function(searchResults) {
+          console.log("[AnimePahe] Search results:", searchResults.data ? searchResults.data.length : 0);
+          if (searchResults.data && searchResults.data.length > 0) {
+            var checkNext = function(idx) {
+              if (idx >= Math.min(searchResults.data.length, 3)) {
+                return Promise.resolve();
+              }
+              var item = searchResults.data[idx];
+              return fetchText("/anime/" + item.session).then(function(pageHtml) {
+                if (pageHtml.indexOf("myanimelist.net/anime/" + targetMalId) !== -1) {
+                  animeSession = item.session;
+                  console.log("[AnimePahe] Found session:", animeSession);
+                  return Promise.resolve();
+                }
+                return checkNext(idx + 1);
+              });
+            };
+            return checkNext(0);
+          }
+          return Promise.resolve();
+        })
+        .then(function() {
+          return proceedToEpisodes();
+        })
+        .catch(function(err) {
+          console.error("[AnimePahe] TV error:", err);
+          resolve([]);
+        });
+    } else {
+      var tmdbUrl = "https://api.themoviedb.org/3/movie/" + tmdbId + "?api_key=" + TMDB_API_KEY;
+      fetch(tmdbUrl, { skipSizeCheck: true })
+        .then(function(res) { return res.json(); })
+        .then(function(tmdbData) {
+          animeTitle = tmdbData.title || tmdbData.original_title;
+          mappedEp = 1;
+          console.log("[AnimePahe] Movie title:", animeTitle);
+          if (!animeTitle) {
+            resolve([]);
+            return Promise.reject("No title");
+          }
+          return searchAnime(animeTitle);
+        })
+        .then(function(searchResults) {
+          console.log("[AnimePahe] Search results:", searchResults.data ? searchResults.data.length : 0);
+          if (searchResults.data && searchResults.data.length > 0) {
+            var firstResult = searchResults.data[0];
+            if (firstResult.title.toLowerCase() === animeTitle.toLowerCase()) {
+              animeSession = firstResult.session;
+              console.log("[AnimePahe] Found session:", animeSession);
             }
           }
-        }
-      } else {
-        const tmdbUrl = `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=1865f43a0549ca50d341dd9ab8b29f49`;
-        const tmdbRes = yield fetch(tmdbUrl);
-        const tmdbData = yield tmdbRes.json();
-        animeTitle = tmdbData.title || tmdbData.original_title;
-        mappedEp = 1;
-        if (!animeTitle)
-          return [];
-        const searchResults = yield searchAnime(animeTitle);
-        if (searchResults.data && searchResults.data.length > 0) {
-          const firstResult = searchResults.data[0];
-          if (firstResult.title.toLowerCase() === animeTitle.toLowerCase()) {
-            animeSession = firstResult.session;
+          return proceedToEpisodes();
+        })
+        .catch(function(err) {
+          console.error("[AnimePahe] Movie error:", err);
+          resolve([]);
+        });
+    }
+
+    function proceedToEpisodes() {
+      if (!animeSession) {
+        console.log("[AnimePahe] No anime session found");
+        resolve([]);
+        return Promise.resolve();
+      }
+
+      var firstPageUrl = "/api?m=release&id=" + animeSession + "&sort=episode_asc&page=1";
+      return fetchJson(firstPageUrl)
+        .then(function(firstPageData) {
+          console.log("[AnimePahe] First page episodes:", firstPageData.data ? firstPageData.data.length : 0);
+          if (!firstPageData.data || firstPageData.data.length === 0) {
+            resolve([]);
+            return Promise.reject("No episodes");
           }
-        }
-      }
-      if (!animeSession)
-        return [];
-      const firstPageUrl = `/api?m=release&id=${animeSession}&sort=episode_asc&page=1`;
-      const firstPageData = yield fetchJson(firstPageUrl);
-      if (!firstPageData.data || firstPageData.data.length === 0)
-        return [];
-      const paheEpStart = Math.floor(firstPageData.data[0].episode);
-      const perPage = firstPageData.per_page || 30;
-      const targetPaheEp = paheEpStart - 1 + mappedEp;
-      const targetPage = Math.ceil(mappedEp / perPage) || 1;
-      const targetPageUrl = `/api?m=release&id=${animeSession}&sort=episode_asc&page=${targetPage}`;
-      const targetPageData = yield fetchJson(targetPageUrl);
-      let episodeSession = null;
-      if (targetPageData && targetPageData.data) {
-        const foundEp = targetPageData.data.find((e) => Math.floor(e.episode) == targetPaheEp);
-        if (foundEp)
-          episodeSession = foundEp.session;
-      }
-      if (!episodeSession && targetPage !== 1) {
-        const fallbackEp = firstPageData.data.find((e) => Math.floor(e.episode) == targetPaheEp);
-        if (fallbackEp)
-          episodeSession = fallbackEp.session;
-      }
-      if (!episodeSession)
-        return [];
-      const playUrl = `/play/${animeSession}/${episodeSession}`;
-      const playHtml = yield fetchText(playUrl);
-      const $ = import_cheerio_without_node_native.default.load(playHtml);
-      const streams = [];
-      const promises = [];
-      $("#resolutionMenu button").each((i, el) => {
-        const $btn = $(el);
-        const kwikUrl = $btn.attr("data-src");
-        const btnText = $btn.text();
-        const quality = extractQuality(btnText);
-        const type = btnText.toLowerCase().includes("eng") ? "Dub" : "Sub";
-        // Keep only 1080p Sub or 720p Sub. Remove 360p and any Dub.
-        if (kwikUrl && kwikUrl.includes("kwik") && (quality === "1080p" || quality === "720p") && type === "Sub") {
-          promises.push(
-            extractKwik(kwikUrl).then((res) => {
-              if (res) {
-                streams.push({
-                  name: `AnimePahe (${quality} Sub)`,
-                  title: `${animeTitle} - Episode ${mappedEp}`,
-                  url: res.url,
-                  quality,
-                  headers: res.headers
-                });
+          var paheEpStart = Math.floor(firstPageData.data[0].episode);
+          var perPage = firstPageData.per_page || 30;
+          var targetPaheEp = paheEpStart - 1 + mappedEp;
+          var targetPage = Math.ceil(mappedEp / perPage) || 1;
+          var targetPageUrl = "/api?m=release&id=" + animeSession + "&sort=episode_asc&page=" + targetPage;
+
+          return fetchJson(targetPageUrl).then(function(targetPageData) {
+            var episodeSession = null;
+            if (targetPageData && targetPageData.data) {
+              for (var i = 0; i < targetPageData.data.length; i++) {
+                if (Math.floor(targetPageData.data[i].episode) == targetPaheEp) {
+                  episodeSession = targetPageData.data[i].session;
+                  break;
+                }
               }
-            })
-          );
-        }
-      });
-      yield Promise.all(promises);
-      const qualityOrder = { "1080p": 2, "720p": 1 }; // only these two
-      return streams.sort((a, b) => (qualityOrder[b.quality] || 0) - (qualityOrder[a.quality] || 0));
-    } catch (error) {
-      return [];
+            }
+            if (!episodeSession && targetPage !== 1) {
+              for (var j = 0; j < firstPageData.data.length; j++) {
+                if (Math.floor(firstPageData.data[j].episode) == targetPaheEp) {
+                  episodeSession = firstPageData.data[j].session;
+                  break;
+                }
+              }
+            }
+            if (!episodeSession) {
+              console.log("[AnimePahe] No episode session found");
+              resolve([]);
+              return Promise.reject("No episode");
+            }
+
+            var playUrl = "/play/" + animeSession + "/" + episodeSession;
+            return fetchText(playUrl).then(function(playHtml) {
+              var buttons = parseResolutionButtons(playHtml);
+              console.log("[AnimePahe] Found", buttons.length, "resolution buttons");
+
+              if (buttons.length === 0) {
+                resolve([]);
+                return;
+              }
+
+              var promises = [];
+              var streams = [];
+              for (var k = 0; k < buttons.length; k++) {
+                (function(btn) {
+                  promises.push(
+                    extractKwik(btn.kwikUrl).then(function(res) {
+                      if (res) {
+                        streams.push({
+                          name: btn.name,
+                          title: animeTitle + " - Episode " + mappedEp,
+                          url: res.url,
+                          quality: btn.quality,
+                          headers: res.headers
+                        });
+                      }
+                    })
+                  );
+                })(buttons[k]);
+              }
+
+              Promise.all(promises).then(function() {
+                var qualityOrder = { "1080p": 3, "720p": 2, "360p": 1 };
+                streams.sort(function(a, b) {
+                  return (qualityOrder[b.quality] || 0) - (qualityOrder[a.quality] || 0);
+                });
+                console.log("[AnimePahe] Returning", streams.length, "streams");
+                resolve(streams);
+              });
+            });
+          });
+        })
+        .catch(function(err) {
+          console.error("[AnimePahe] Episode error:", err);
+          resolve([]);
+        });
     }
   });
 }
+
 module.exports = { getStreams };
