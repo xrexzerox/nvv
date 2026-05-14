@@ -252,18 +252,47 @@ function findEpisode(episodes, mediaType, episodeNum) {
     var targetEp = null;
     if (mediaType === "movie") {
         targetEp = episodes[episodes.length - 1];
-        log("Movie mode: using episode " + targetEp.number);
-    } else {
-        for (var i = 0; i < episodes.length; i++) {
-            if (parseInt(episodes[i].number) === parseInt(episodeNum)) {
-                targetEp = episodes[i];
-                break;
-            }
-        }
-        if (!targetEp) throw new Error("Episode " + episodeNum + " not found");
-        log("Found TV episode " + targetEp.number + " (ID: " + targetEp.id + ")");
+        log("Movie mode: using episode " + targetEp.number + " (ID: " + targetEp.id + ")");
+        return targetEp;
     }
-    return targetEp;
+
+    // Debug: log all available episodes
+    var epList = [];
+    for (var i = 0; i < episodes.length; i++) {
+        epList.push("#" + episodes[i].number + "(id=" + episodes[i].id + ")");
+    }
+    log("Available episodes: [" + epList.join(", ") + "]");
+
+    var targetNum = parseInt(episodeNum, 10);
+
+    // Strategy 1: Exact number match
+    for (var i = 0; i < episodes.length; i++) {
+        if (parseInt(episodes[i].number, 10) === targetNum) {
+            targetEp = episodes[i];
+            log("Exact match: episode " + targetEp.number + " (ID: " + targetEp.id + ")");
+            return targetEp;
+        }
+    }
+
+    // Strategy 2: Index-based fallback (episode 1 = index 0)
+    var idx = targetNum - 1;
+    if (idx >= 0 && idx < episodes.length) {
+        targetEp = episodes[idx];
+        log("Index fallback: requested ep " + targetNum + " -> index " + idx + " (number=" + targetEp.number + ", ID=" + targetEp.id + ")");
+        return targetEp;
+    }
+
+    // Strategy 3: String contains match
+    for (var i = 0; i < episodes.length; i++) {
+        var numStr = String(episodes[i].number || "");
+        if (numStr.indexOf(String(targetNum)) !== -1) {
+            targetEp = episodes[i];
+            log("String match: episode " + targetEp.number + " (ID: " + targetEp.id + ")");
+            return targetEp;
+        }
+    }
+
+    throw new Error("Episode " + episodeNum + " not found among " + episodes.length + " episodes");
 }
 
 function extractQuality(url) {
